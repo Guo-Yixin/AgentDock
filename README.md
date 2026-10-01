@@ -4,11 +4,12 @@
 
 ## 启动
 
-需要 Node.js 24 或更新版本（本机使用 Node.js 26 验证）。
+需要 Node.js 24 或更新版本（本机使用 Node.js 26 验证）。以下为 Windows PowerShell 示例：
 
 ```powershell
-cd B:\codex_pr\agentdock
-npm.cmd install
+git clone https://github.com/Guo-Yixin/AgentDock.git
+cd AgentDock
+npm.cmd ci
 npm.cmd run build
 npm.cmd start
 ```
@@ -18,6 +19,33 @@ npm.cmd start
 开发模式：`npm.cmd run dev`，打开 http://127.0.0.1:5173 。
 
 演示模式：页面左下角“查看演示体验”，或访问 http://127.0.0.1:4317/?demo=1 。演示任务单独存放在前端内存，不写入本机索引。
+
+## 新用户如何接入自己的 IDE
+
+**只使用 Codex 也可以运行。** 不需要同时安装 Claude Code、Cursor 或其他工具，各来源独立扫描。没有找到记录的来源会显示“未找到记录”，不会阻止其他来源导入。刚安装工具但尚未产生本地会话记录时，也可能显示这个状态；它不等同于“工具未安装”。
+
+**用户名、软件安装位置和 AgentDock 项目位置可以与开发者不同。** 默认路径基于运行 AgentDock 的当前用户主目录自动计算，没有写死开发者的用户名或 `B:` 盘路径。例如，Windows 用户主目录为 `C:\Users\Alice` 时，默认检查：
+
+| 来源 | 默认会话数据位置 |
+| --- | --- |
+| Codex / Codex CLI | `C:\Users\Alice\.codex` |
+| Claude Code / CLI | `C:\Users\Alice\.claude\projects` |
+| Cursor | `C:\Users\Alice\AppData\Roaming\Cursor\User` 下的本地数据库 |
+
+AgentDock 读取的是**会话数据目录**，不是 IDE 或 CLI 的程序安装目录。把软件安装在另一个盘符不需要修改 AgentDock；把会话数据改到自定义目录时，需要明确指定数据位置。
+
+例如，Codex 的数据根目录为 `D:\AI\codex-data`，在克隆后的 AgentDock 项目目录中执行：
+
+```powershell
+$env:AGENTDOCK_CODEX_ROOT = "D:\AI\codex-data"
+npm.cmd start
+```
+
+填写包含 `sessions`、`archived_sessions` 或会话索引数据库的数据根目录，不要填写 `codex.exe` 所在的程序目录。环境变量需要在启动服务前设置；上面的 PowerShell 设置仅对当前终端及其启动的进程生效，重新打开终端后需要重新设置。
+
+其余来源可使用下方“本地配置”中的对应变量。**当前没有首次使用向导或网页路径设置，也不会自动采用 `CODEX_HOME`、`CLAUDE_CONFIG_DIR` 来覆盖默认路径**；使用自定义记录位置的用户需要设置 `AGENTDOCK_*` 变量。当前主要在 Windows 上验证，Cursor 默认发现路径也是 Windows 布局，其他操作系统的接入覆盖尚未验证。
+
+GitHub 仓库包含代码、生成素材与合成测试样本，不包含开发者的真实会话数据库。新用户启动后建立的是自己的本地索引。
 
 ## 已实现
 
