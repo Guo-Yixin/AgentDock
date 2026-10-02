@@ -1,3 +1,4 @@
+import { testStore } from '../tests/mysql-helper.mjs';
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
@@ -14,7 +15,12 @@ const db = new DatabaseSync(path.join(cursor, 'state.vscdb')); db.exec('CREATE T
 db.prepare('INSERT OR REPLACE INTO composerHeaders VALUES(?,?)').run('test-cursor', JSON.stringify({ composerId: 'test-cursor', createdAt: Date.now(), workspaceIdentifier: project }));
 db.prepare('INSERT OR REPLACE INTO cursorDiskKV VALUES(?,?)').run('composerData:test-cursor', JSON.stringify({ composerId: 'test-cursor', name: '完善来源列表', workspaceIdentifier: project, conversationMap: { a: { type: 1, text: '完善来源列表' }, b: { type: 2, text: '已完成页面，实现待确认。' } } })); db.close();
 process.env.AGENTDOCK_HOME = home; process.env.AGENTDOCK_DATA = path.resolve('artifacts/e2e/data'); process.env.AGENTDOCK_PORT = '4318';
+const { store, config } = await testStore('agentdock_e2e'); await store.close();
+for (const name of ['host','port','user','password','database']) process.env['AGENTDOCK_MYSQL_'+name.toUpperCase()] = String(config[name]); process.env.AGENTDOCK_MYSQL_TLS=String(config.tls);
 const testIndex = path.join(process.env.AGENTDOCK_DATA, 'agentdock.sqlite');
-if (existsSync(testIndex)) { const reset = new DatabaseSync(testIndex); reset.exec('DELETE FROM annotations;'); reset.close(); }
+
 if (!existsSync('dist/client/index.html')) throw new Error('Run npm run build before browser tests.');
-await import('../server/index.mjs');
+const {spawn}=await import('node:child_process'); const {createServer}=await import('node:http');
+const mock=createServer(async(req,res)=>{ if(req.url==='/models'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({data:[{id:'deepseek-flash'}]}));return;} let raw=''; for await(const c of req)raw+=c; const body=JSON.parse(raw); if(JSON.stringify(body.messages).includes('synthetic-e2e-key')){res.writeHead(400);res.end();return;} res.writeHead(200,{'Content-Type':'text/event-stream'});let i=0;const parts=['根据所选事实 [1]，\n','先验证任务完成状态。\n','不要把本轮回复结束当作整体完成。'];const timer=setInterval(()=>{if(i<parts.length)res.write('data: '+JSON.stringify({choices:[{delta:{content:parts[i++]}}]})+'\n\n');else{clearInterval(timer);res.end('data: '+JSON.stringify({usage:{total_tokens:24},choices:[]})+'\n\ndata: [DONE]\n\n');}},body.messages.at(-1).content.includes('慢速验证')?1000:150);res.on('close',()=>clearInterval(timer));});await new Promise(r=>mock.listen(0,'127.0.0.1',r));
+process.env.AGENTDOCK_TEST_MODE='synthetic';process.env.AGENTDOCK_DEEPSEEK_API_KEY='synthetic-e2e-key';process.env.AGENTDOCK_TEST_MODEL_URL=`http://127.0.0.1:${mock.address().port}`;
+const child=spawn(process.execPath,['server/index.mjs'],{stdio:'inherit',env:process.env});const stop=()=>{child.kill();mock.close();};process.on('SIGINT',stop);process.on('SIGTERM',stop);child.on('exit',code=>{mock.close();process.exitCode=code||0;});

@@ -1,32 +1,44 @@
 # 本地接口
 
-默认服务：`http://127.0.0.1:4317`。前端与 API 同源使用；开发服务器 5173 通过 Vite 转发 `/api`。所有数据库查询与扫描在 Worker 中执行。
+默认 `http://127.0.0.1:4317`；开发页面 5173 经 Vite 代理。Worker 执行存储查询、采集和报告生成，MySQL 参数化查询；原工具文件只读。未配置数据库时 health、settings、来源发现、演示和空列表可使用。
 
 | 方法 | 路径 | 行为 |
 | --- | --- | --- |
-| GET | `/api/health` | 服务版本与 Worker 健康状态 |
-| GET | `/api/overview` | 统计、项目、来源覆盖、每小时索引事件和导入进度 |
-| GET | `/api/projects` | 按工作目录 / Git 归属聚合的项目 |
-| GET | `/api/sources` | 适配器状态、覆盖说明与实际路径 |
-| GET | `/api/tasks` | 分页会话列表 |
-| GET | `/api/tasks/:id` | 会话、最近事件与用户标记 |
-| PATCH | `/api/tasks/:id` | 修改 AgentDock 自己的用户标记 |
-| GET | `/api/export` | 今日 Markdown 摘要；`?task=:id` 导出单任务 |
-| GET | `/api/events` | SSE，`update` 提示客户端重新查询；3 秒重试、15 秒心跳 |
+| GET | `/api/health`、`/api/settings` | 连接状态与公开配置，不返回密码/Key |
+| POST | `/api/settings/database/test` | 只读连接与版本测试，不初始化 |
+| POST | `/api/settings/database` | 验证、初始化新目标后保存 DPAPI 配置 |
+| POST | `/api/settings/database/initialize` | 初始化当前配置的 ad_ 表 |
+| GET / POST | `/api/migration` | 旧 SQLite 迁移状态 / 可重复迁移 |
+| POST | `/api/settings/model`、`/api/settings/model/test` | 保存 Key/模型；仅查询模型列表的测试 |
+| DELETE | `/api/settings/model/key` | 删除本地加密 Key（环境变量须自行移除） |
+| GET | `/api/sources/discover`、`/api/sources` | 来源发现 / 采集健康与覆盖 |
+| PATCH | `/api/sources/:id` | 保存绝对数据根目录与 enabled；环境变量优先 |
+| POST | `/api/sources/scan` | 启动扫描，进度经 overview / SSE 展示 |
+| GET | `/api/overview`、`/api/projects` | 统计、聚合项目与导入进度 |
+| GET | `/api/tasks`、`/api/tasks/:id` | 分页列表 / 详情与用户标记 |
+| PATCH | `/api/tasks/:id` | 备注、摘要补充、完成、关联、关注、Pi 分支 |
+| GET | `/api/export` | 今日摘要；`?task=:id` 单任务 Markdown |
+| GET / POST | `/api/reports` | 报告列表 / 按 kind,date,project,provider 生成事实 |
+| GET / PATCH | `/api/reports/:id` | 详情 / userText 人工补充 |
+| GET | `/api/reports/:id/export` | Markdown 事实、补充与 AI 版本 |
+| POST | `/api/reports/:id/analysis` | 以 chatId 选择已完成回答，用户确认保存 AI 版本 |
+| GET / POST | `/api/schedules` | 日程列表 / 创建或更新 |
+| DELETE | `/api/schedules/:id` | 删除日程 |
+| GET | `/api/calendar?start=&end=` | 最多 62 天活动（毫秒）及日程 |
+| GET | `/api/reminders` | 未处理的有效到期提醒 |
+| POST | `/api/reminders/:id/ack` | 持久化处理状态 |
+| POST | `/api/assistant/context` | 按对象 ID 构建、脱敏、保存发送预览 |
+| GET | `/api/assistant/chats`、`/api/assistant/chats/:id` | 聊天历史与上下文快照 |
+| DELETE | `/api/assistant/chats/:id` | 删除聊天 |
+| POST | `/api/assistant/generate` | 校验预览后向 DeepSeek 请求；流式 chat/delta/done/error |
+| GET | `/api/events` | 更新 SSE，3 秒重试、15 秒心跳 |
 
-列表参数：`q`（字面文本检索）、`provider`、`project`、`status`、`page`（从 1 开始，每页 30）、`recent=true`（近 30 天）。结果 `{ tasks, total, page, pageSize }`，按原始最近活动时间排序。
+任务列表参数：`q` 字面检索、`provider`、`project`、`status`、`page`（从 1 开始，每页 30）、`recent=true`。列表筛选、分页与日期活动查询在 MySQL 执行。
 
-统一会话字段见 `src/types.ts`。唯一身份由工具 provider 与原始会话 ID 组成，使用入口 surface 不参与去重。Claude 子代理的原始会话 ID 补充子代理身份，保留父会话 ID。证据包含原始文件 path、可用时的 line，以及 SQLite 记录 locator。
+上下文请求示例：`{refs:[{type:"task",id:"会话ID",includeTranscript:false}],range:{start:毫秒,end:毫秒}}`。type 可为 task/project/report/schedule；最多 40 项、48000 字符。返回 id、fingerprint、text、sources、长度估计、15 分钟有效期。生成请求 `{previewId,fingerprint,question,chatId?}`；中断浏览器 fetch 即停止上游生成，不自动重试。
 
-用户标记：`note`、`summaryOverride`（null 恢复来源摘要）、`manualStatus`（null 跟随来源）、`goalGroup`（同名关联目标）、`pinned`。来源完成状态与用户状态独立保存。`done` 只由用户标记产生；来源结构化待办仅能产生 `reported_complete`。确认时间独立保存，修改备注不会把旧任务重新计入今日完成。
+日程字段：`id?`、`title`、`note`、`start`、`end`、`allDay`、`projectId`、`taskId`、`done`、`reminderMinutes`（0/5/15/30/60/1440）。时间均为毫秒，展示时区 Asia/Shanghai。
 
-未找到任务返回 404，格式错误返回 400，非本机 / 不可信来源返回 403。错误响应为 `{ error }`。外部路径不是任何写接口的参数，服务不能修改原始工具日志。
+用户标记：note、summaryOverride（null 跟随来源）、manualStatus（null 跟随来源）、goalGroup、pinned、branchId。manualStatus 只能用户确认 done，来源待办仅产生 reported_complete；修改备注不改变旧 confirmedAt。
 
-适配器目前使用只读本机文件、目录发现及增量同步。Claude / Cursor 官方 Hooks 适合后续增强实时事件精度：
-
-- https://code.claude.com/docs/en/hooks
-- https://cursor.com/docs/hooks
-
-Codex 官方 app-server 也提供会话分页接口；首版使用本机记录，不接管正在运行的会话：
-
-- https://learn.chatgpt.com/docs/app-server
+错误 `{error}`；无对象通常 404、格式或配置错误 400、不可信 Host/Origin 403。助手上下文不能传任意文件路径，服务不提供任务执行接口。公开配置中只有 hasPassword / hasKey 标记；Key 仅用于后端认证头。

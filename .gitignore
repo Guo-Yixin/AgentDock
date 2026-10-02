@@ -2,5 +2,15 @@ node_modules/
 dist/
 data/
 artifacts/
+playwright-report/
 .env*
 !.env.example
+# Local configuration, credentials and backups outside the default data directory
+settings.local.json*
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sql
+*.sql.gz
+*.dump
+*.bak

@@ -1,0 +1,97 @@
+name: 自动检查
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows:
+    name: Windows / Node.js ${{ matrix.node }}
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [24, 26]
+    steps:
+      - name: 获取代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: 配置 Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - name: 安装依赖
+        run: npm ci
+      - name: 解析与 Windows 加密测试
+        run: npm test
+      - name: 检查类型并构建
+        run: npm run build
+  mysql:
+    name: MySQL 与浏览器 / Node.js ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [24, 26]
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: synthetic-ci-only
+          MYSQL_DATABASE: agentdock_ci
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    env:
+      CI: 'true'
+      AGENTDOCK_MYSQL_HOST: 127.0.0.1
+      AGENTDOCK_MYSQL_PORT: '3306'
+      AGENTDOCK_MYSQL_USER: root
+      AGENTDOCK_MYSQL_PASSWORD: synthetic-ci-only
+      AGENTDOCK_MYSQL_DATABASE: agentdock_ci
+      AGENTDOCK_MYSQL_TLS: 'false'
+    steps:
+      - name: 获取代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: 配置 Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - name: 安装依赖
+        run: npm ci
+      - name: MySQL 集成测试
+        run: npm run test:integration
+      - name: 检查类型并构建
+        run: npm run build
+      - name: 安装 Chromium
+        run: npx playwright install --with-deps chromium
+      - name: 浏览器验收
+        run: npm run test:e2e -- --forbid-only --reporter=list,html
+      - name: 保存测试报告
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-results-ubuntu-node-${{ matrix.node }}
+          path: |
+            playwright-report/
+            artifacts/browser-results/
+            artifacts/screenshots/
+          if-no-files-found: ignore
+          retention-days: 7

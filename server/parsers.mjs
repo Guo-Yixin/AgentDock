@@ -3,7 +3,7 @@ import path from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 
 export const hash = value => createHash('sha256').update(value).digest('hex').slice(0, 24);
-export const PARSER_VERSION = 2;
+export const PARSER_VERSION = 4;
 export function epoch(value, fallback = 0) {
   if (typeof value === 'number') return value < 1e11 ? value * 1000 : value;
   const result = Date.parse(value); return Number.isFinite(result) ? result : fallback;
@@ -49,20 +49,23 @@ export function projectFor(cwd = '') {
 export function emptyTask(provider, nativeId, file, meta = {}) {
   return { id: `${provider}-${hash(nativeId)}`, provider, nativeId, surface: '未知入口', title: '', goal: '', cwd: '', createdAt: 0, updatedAt: 0, activity: 'unknown', completion: 'unconfirmed', summary: '', summaryEvidence: null, todos: [], archived: false, partial: false, evidence: { path: file }, events: [], ...meta };
 }
-function addEvent(task, kind, text, timestamp, evidence) {
+export function addEvent(task, kind, text, timestamp, evidence) {
   const value = cleanText(text, 6000); if (!value) return;
   const last = task.events.at(-1);
   if (last?.kind === kind && last.text === value && Math.abs(last.timestamp - timestamp) < 10000) return;
-  task.events.push({ timestamp, kind, text: value, evidence });
+  const event = { timestamp, kind, text: value, evidence };
+  task.events.push(event);
+  (task._newEvents ||= []).push(event);
   if (task.events.length > 200) task.events.shift();
 }
-function message(task, role, text, timestamp, evidence) {
+export function message(task, role, text, timestamp, evidence) {
   const value = cleanText(text); if (!value) return;
+  if(role==='user')task.activity='recent';
   if (role === 'user' && !task.goal) { task.goal = value; if (!task.title) task.title = value.split('\n').find(line => line.trim() && !/^# (AGENTS|Files)/.test(line))?.replace(/^#+\s*/, '').slice(0, 180) || '未命名会话'; }
   if (role === 'assistant') { task.summary = value; task.summaryEvidence = evidence; task.activity = 'responded'; }
   if (['user', 'assistant'].includes(role)) addEvent(task, role, value, timestamp, evidence);
 }
-function setTodos(task, values) {
+export function setTodos(task, values) {
   if (!Array.isArray(values)) return;
   task.todos = values.map(todo => ({ text: String(todo.step || todo.content || todo.text || todo.description || todo.subject || '').slice(0, 600), status: ['completed', 'done'].includes(todo.status) ? 'completed' : todo.status === 'in_progress' ? 'in_progress' : 'pending' })).filter(todo => todo.text).slice(0, 100);
 }
@@ -83,11 +86,11 @@ export function consumeCodex(task, record, evidence) {
     task.surface = /desktop|codex.app|daybreak/i.test(origin) ? '桌面' : /vscode|extension/i.test(source + origin) ? '编辑器' : /appserver/i.test(source) ? '桌面/服务' : /cli/i.test(source) ? 'CLI' : task.surface;
   }
   if (record.type === 'response_item') {
-    if (item.type === 'message' && item.channel !== 'analysis') message(task, item.role, contentText(item.content), timestamp, evidence);
+    if (item.type === 'message' && item.channel !== 'analysis') {message(task, item.role, contentText(item.content), timestamp, evidence);if(item.channel==='commentary')task.activity='recent';}
     if (item.type === 'function_call') tool(task, item.name || '未命名工具', item.arguments, timestamp, evidence);
   }
   if (record.type === 'event_msg') {
-    if (item.type === 'agent_message' && item.phase !== 'analysis') message(task, 'assistant', item.message, timestamp, evidence);
+    if (item.type === 'agent_message' && item.phase !== 'analysis') {message(task, 'assistant', item.message, timestamp, evidence);if(item.phase==='commentary')task.activity='recent';}
     if (item.type === 'user_message') message(task, 'user', item.message, timestamp, evidence);
     if (item.type === 'task_started') { task.activity = 'recent'; addEvent(task, 'status', '新一轮任务开始', timestamp, evidence); }
     if (item.type === 'task_complete') { task.activity = 'responded'; addEvent(task, 'status', '本轮回复已结束；整体任务完成待确认', timestamp, evidence); if (item.last_agent_message && !task.summary) message(task, 'assistant', item.last_agent_message, timestamp, evidence); }

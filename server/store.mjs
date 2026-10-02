@@ -1,72 +1,67 @@
-import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
-import path from 'node:path';
-
+import { redact } from './model.mjs';
+import mysql from 'mysql2/promise';
+import { createHash, randomUUID } from 'node:crypto';
 export const defaultAnnotation = { note: '', summaryOverride: null, manualStatus: null, goalGroup: '', pinned: false };
-export function openStore(file) {
-  mkdirSync(path.dirname(file), { recursive: true });
-  const db = new DatabaseSync(file);
-  db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=3000;
-    CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, provider TEXT NOT NULL, native_id TEXT NOT NULL, project_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, record TEXT NOT NULL, UNIQUE(provider,native_id));
-    CREATE INDEX IF NOT EXISTS task_recency ON tasks(updated_at DESC);
-    CREATE INDEX IF NOT EXISTS task_project ON tasks(project_id);
-    CREATE TABLE IF NOT EXISTS annotations (task_id TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
-    CREATE TABLE IF NOT EXISTS checkpoints (path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime REAL NOT NULL, offset INTEGER NOT NULL, line INTEGER NOT NULL, state TEXT NOT NULL);
-    CREATE VIRTUAL TABLE IF NOT EXISTS task_search USING fts5(task_id UNINDEXED, content, tokenize='trigram');
-    PRAGMA user_version=1;`);
-  return new Store(db);
+export const decode = value => typeof value === 'string' ? JSON.parse(value) : value;
+export const dayStart = (now = Date.now()) => Math.floor((now + 28800000) / 86400000) * 86400000 - 28800000;
+export const digest = value => createHash('sha256').update(value).digest('hex');
+const ddl = [
+ `CREATE TABLE IF NOT EXISTS ad_schema_migrations(version INT PRIMARY KEY,applied_at BIGINT NOT NULL)`,
+ `CREATE TABLE IF NOT EXISTS ad_tasks(id VARCHAR(128) PRIMARY KEY,provider VARCHAR(32) NOT NULL,native_id VARCHAR(512) COLLATE utf8mb4_bin NOT NULL,project_id VARCHAR(128) NOT NULL,created_at BIGINT NOT NULL,updated_at BIGINT NOT NULL,completion VARCHAR(32) NOT NULL,search_text LONGTEXT NOT NULL,record JSON NOT NULL,UNIQUE KEY task_identity(provider,native_id),KEY task_recency(updated_at),KEY task_project(project_id))`,
+ `CREATE TABLE IF NOT EXISTS ad_annotations(task_id VARCHAR(128) PRIMARY KEY,value JSON NOT NULL,updated_at BIGINT NOT NULL)`,
+ `CREATE TABLE IF NOT EXISTS ad_checkpoints(path_hash CHAR(64) PRIMARY KEY,path TEXT NOT NULL,size BIGINT NOT NULL,mtime DOUBLE NOT NULL,offset BIGINT NOT NULL,line BIGINT NOT NULL,state JSON NOT NULL)`,
+ `CREATE TABLE IF NOT EXISTS ad_events(id CHAR(64) PRIMARY KEY,task_id VARCHAR(128) NOT NULL,timestamp BIGINT NOT NULL,record JSON NOT NULL,KEY event_period(timestamp,task_id),KEY event_task(task_id,timestamp))`,
+ `CREATE TABLE IF NOT EXISTS ad_documents(id VARCHAR(128) PRIMARY KEY,kind VARCHAR(32) NOT NULL,title VARCHAR(255) NOT NULL,updated_at BIGINT NOT NULL,record JSON NOT NULL,KEY document_kind(kind,updated_at))`
+];
+export function connectionOptions(c) { return {host:c.host,port:c.port,user:c.user,password:c.password,database:c.database,charset:'utf8mb4',connectTimeout:8000,supportBigNumbers:true,ssl:c.tls?{rejectUnauthorized:true,...(c.ca?{ca:c.ca}:{})}:undefined}; }
+export function databaseError(e) { return {ER_ACCESS_DENIED_ERROR:'数据库认证失败，请检查账号、密码和账号允许的来源',ER_BAD_DB_ERROR:'数据库不存在，请先创建指定数据库',ER_TABLEACCESS_DENIED_ERROR:'数据库账号缺少表权限',ER_DBACCESS_DENIED_ERROR:'账号不能访问指定数据库',ECONNREFUSED:'无法连接 MySQL，请检查服务与地址',ETIMEDOUT:'数据库连接超时',ER_NO_SUCH_TABLE:'请先初始化 AgentDock 表结构'}[e.code] || '数据库操作失败，请检查连接、证书和权限'; }
+export async function testDatabase(c) { let connection; try { connection=await mysql.createConnection(connectionOptions(c)); const [r]=await connection.query('SELECT VERSION() version'); if(!/^8\./.test(r[0].version))throw Object.assign(new Error(),{code:'VERSION'}); return {ok:true,version:r[0].version}; } catch(e){throw new Error(e.code==='VERSION'?'需要 MySQL 8.0 或 8.4':databaseError(e));}finally{await connection?.end();} }
+export async function openStore(c,initialize=false) {
+ await testDatabase(c); const pool=mysql.createPool({...connectionOptions(c),connectionLimit:6,waitForConnections:true,queueLimit:60});
+ try {if(initialize){const conn=await pool.getConnection();try {const [locks]=await conn.query("SELECT GET_LOCK('agentdock_schema',10) locked");if(!locks[0].locked)throw new Error('迁移锁超时');for(const sql of ddl)await conn.query(sql+' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci');await conn.execute('INSERT IGNORE INTO ad_schema_migrations VALUES(1,?)',[Date.now()]);const [columns]=await conn.query("SELECT COLLATION_NAME collation FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='ad_tasks' AND column_name='native_id'");if(columns[0]?.collation!=='utf8mb4_bin')await conn.query('ALTER TABLE ad_tasks MODIFY native_id VARCHAR(512) COLLATE utf8mb4_bin NOT NULL');await conn.execute('INSERT IGNORE INTO ad_schema_migrations VALUES(2,?)',[Date.now()]);}finally{await conn.query("SELECT RELEASE_LOCK('agentdock_schema')").catch(()=>{});conn.release();}}
+ const [versions]=await pool.query('SELECT MAX(version) version FROM ad_schema_migrations');if(Number(versions[0]?.version)<2)throw Object.assign(new Error(),{code:'ER_NO_SUCH_TABLE'});return new Store(pool,false,[c.password]);
+ }catch(e){await pool.end();throw new Error(databaseError(e));}
 }
+const join='FROM ad_tasks t LEFT JOIN ad_annotations a ON a.task_id=t.id';
+const state="COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(a.value,'$.manualStatus')),'null'),t.completion)";
 export class Store {
-  constructor(db) { this.db = db; }
-  upsert(task, force = false) {
-    const current = this.db.prepare('SELECT updated_at,record FROM tasks WHERE id=?').get(task.id);
-    if (!force && current && current.updated_at > task.updatedAt) return false;
-    this.db.prepare('INSERT INTO tasks VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET project_id=excluded.project_id,created_at=excluded.created_at,updated_at=excluded.updated_at,record=excluded.record').run(task.id, task.provider, task.nativeId, task.projectId, task.createdAt, task.updatedAt, JSON.stringify(task));
-    this.db.prepare('DELETE FROM task_search WHERE task_id=?').run(task.id);
-    this.db.prepare('INSERT INTO task_search(task_id,content) VALUES(?,?)').run(task.id, `${task.title} ${task.goal} ${task.summary} ${task.projectName} ${task.cwd}`);
-    return true;
-  }
-  hydrate(row, detail = false) {
-    if (!row) return null;
-    const task = JSON.parse(row.record); const annotation = { ...defaultAnnotation, ...JSON.parse(row.annotation || '{}') };
-    task.annotation = annotation; task.completion = annotation.manualStatus || task.completion;
-    if (!detail) delete task.events;
-    return task;
-  }
-  get(id) { return this.hydrate(this.db.prepare('SELECT t.*,a.value AS annotation FROM tasks t LEFT JOIN annotations a ON a.task_id=t.id WHERE t.id=?').get(id), true); }
-  all(detail = false) { return this.db.prepare('SELECT t.*,a.value AS annotation FROM tasks t LEFT JOIN annotations a ON a.task_id=t.id ORDER BY t.updated_at DESC').all().map(row => this.hydrate(row, detail)); }
-  list({ q = '', provider = '', project = '', status = '', page = 1, recent = false } = {}) {
-    const words = q.trim().toLocaleLowerCase(); const cutoff = Date.now() - 30 * 86400000;
-    // Literal substring search supports short Chinese terms and punctuation without exposing FTS operators.
-    const matches = this.all().filter(task => (!provider || task.provider === provider) && (!project || task.projectId === project) && (!status || task.completion === status) && (!recent || task.updatedAt >= cutoff) && (!words || `${task.title} ${task.goal} ${task.summary} ${task.annotation.summaryOverride || ''} ${task.annotation.note} ${task.annotation.goalGroup} ${task.cwd}`.toLocaleLowerCase().includes(words)));
-    return { tasks: matches.slice((page - 1) * 30, page * 30), total: matches.length, page, pageSize: 30 };
-  }
-  patch(id, patch) {
-    const task = this.get(id); if (!task) return null;
-    const annotation = { ...task.annotation, ...patch };
-    if (patch.manualStatus === 'done' && task.annotation.manualStatus !== 'done') annotation.confirmedAt = Date.now();
-    else if ('manualStatus' in patch && patch.manualStatus !== 'done') annotation.confirmedAt = null;
-    this.db.prepare('INSERT INTO annotations VALUES(?,?,?) ON CONFLICT(task_id) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at').run(id, JSON.stringify(annotation), Date.now());
-    return this.get(id);
-  }
-  checkpoint(file) { const row = this.db.prepare('SELECT * FROM checkpoints WHERE path=?').get(file); return row ? { ...row, task: JSON.parse(row.state) } : null; }
-  saveCheckpoint(file, stat, offset, line, task) { this.db.prepare('INSERT OR REPLACE INTO checkpoints VALUES(?,?,?,?,?,?)').run(file, stat.size, stat.mtimeMs, offset, line, JSON.stringify(task)); }
-  overview(sources, progress) {
-    const tasks = this.all(true); const todayStart = dayStart(); const projects = new Map(); const hourly = Array(24).fill(0);
-    for (const task of tasks) {
-      const project = projects.get(task.projectId) || { id: task.projectId, name: task.projectName, root: task.projectRoot || task.cwd, count: 0, updatedAt: 0, providers: [] };
-      project.count++; project.updatedAt = Math.max(project.updatedAt, task.updatedAt); if (!project.providers.includes(task.provider)) project.providers.push(task.provider); projects.set(project.id, project);
-      for (const event of task.events || []) if (event.timestamp >= todayStart && event.timestamp < todayStart + 86400000) hourly[Math.floor((event.timestamp - todayStart) / 3600000)]++;
-    }
-    const completedToday = new Set(this.db.prepare('SELECT task_id,value FROM annotations').all().filter(row => { const value = JSON.parse(row.value); return value.manualStatus === 'done' && value.confirmedAt >= todayStart; }).map(row => row.task_id));
-    return { total: tasks.length, recent: tasks.filter(t => t.updatedAt >= Date.now() - 30 * 86400000).length, needsAttention: tasks.filter(t => ['blocked', 'unconfirmed'].includes(t.completion)).length, today: tasks.filter(t => t.updatedAt >= todayStart).length, doneToday: completedToday.size, projects: [...projects.values()].sort((a, b) => b.updatedAt - a.updatedAt), sources: sources.map(source => ({ ...source, count: tasks.filter(t => t.provider === source.id).length })), hourly, importing: progress.active, importProgress: { completed: progress.completed, total: progress.total }, updatedAt: Date.now() };
-  }
-  export(id) {
-    const tasks = id ? [this.get(id)].filter(Boolean) : this.all().filter(t => t.updatedAt >= dayStart());
-    if (id && !tasks.length) return null;
-    const labels = { unconfirmed: '待确认', reported_complete: '已报告完成（来源陈述）', done: '用户已确认完成', blocked: '需处理', in_progress: '进行中' };
-    return `# AgentDock · ${id ? '任务' : '今日'}摘要\n\n导出时间：${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}（UTC+8）\n\n摘要来自本机记录，不自动构成实现或验证结果。\n\n${tasks.map(task => `## ${task.title}\n\n- 来源：${task.provider} / ${task.surface}\n- 项目：${task.projectName}\n- 状态：${labels[task.completion]}\n- 原始会话：${task.nativeId}\n- 依据：${task.evidence.path}${task.evidence.line ? ':' + task.evidence.line : ''}${task.evidence.locator ? ' · ' + task.evidence.locator : ''}\n\n### 目标\n\n${task.goal || '暂无目标'}\n\n### 摘要${task.annotation.summaryOverride ? '（用户编辑）' : '（原始记录提取）'}\n\n${task.annotation.summaryOverride || task.summary || '暂无可提取摘要'}\n\n${task.summaryEvidence ? `摘要依据：${task.summaryEvidence.path}${task.summaryEvidence.line ? ':' + task.summaryEvidence.line : ''}\n\n` : ''}### 待办\n\n${task.todos.map(t => `- [${t.status === 'completed' ? 'x' : ' '}] ${t.text}`).join('\n') || '无结构化待办'}\n\n### 关联目标\n\n${task.annotation.goalGroup || '未关联'}\n\n### 我的备注\n\n${task.annotation.note || '无'}\n`).join('\n---\n\n')}`;
-  }
-  close() { this.db.close(); }
+ constructor(db,scoped=false,secrets=[]){this.db=db;this.scoped=scoped;this.secrets=secrets;}
+ scrub(value){if(Array.isArray(value))return value.map(v=>this.scrub(v));if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,['title','goal','summary','text','note','summaryOverride','userText'].includes(k)&&typeof v==='string'?redact(v,this.secrets):this.scrub(v)]));return value;}
+ async rows(sql,params=[]){const [r]=await this.db.execute(sql,params);return r;}
+ async transaction(fn){if(this.scoped)return fn(this);const c=await this.db.getConnection();try{await c.beginTransaction();const r=await fn(new Store(c,true,this.secrets));await c.commit();return r;}catch(e){await c.rollback();throw e;}finally{c.release();}}
+ async upsert(task,force=false){
+  if(!this.scoped)return this.transaction(tx=>tx.upsert(task,force));
+  const [current]=await this.rows('SELECT updated_at FROM ad_tasks WHERE id=? FOR UPDATE',[task.id]);if(!force&&current&&Number(current.updated_at)>task.updatedAt)return false;
+  task=this.scrub(task);const record=Object.fromEntries(Object.entries(task).filter(([k])=>!k.startsWith('_')));record.events=(task.events||[]).slice(-200);
+  await this.rows('INSERT INTO ad_tasks VALUES(?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE project_id=VALUES(project_id),created_at=VALUES(created_at),updated_at=VALUES(updated_at),completion=VALUES(completion),search_text=VALUES(search_text),record=VALUES(record)',[task.id,task.provider,task.nativeId,task.projectId||'unassigned',task.createdAt,task.updatedAt,task.completion,`${task.title} ${task.goal} ${task.summary} ${task.projectName} ${task.cwd}`,JSON.stringify(record)]);
+  if(force)await this.rows("DELETE FROM ad_events WHERE task_id=? AND JSON_UNQUOTE(JSON_EXTRACT(record,'$.evidence.path'))=?",[task.id,task.evidence.path]);
+  const events=task._newEvents||task.events||[];for(let i=0;i<events.length;i+=100){const b=events.slice(i,i+100);await this.rows(`INSERT INTO ad_events VALUES ${b.map(()=>'(?,?,?,?)').join(',')} ON DUPLICATE KEY UPDATE record=VALUES(record)`,b.flatMap(e=>[digest(JSON.stringify([task.id,e.timestamp,e.kind,e.text])),task.id,e.timestamp,JSON.stringify(e)]));}return true;
+ }
+ hydrate(row,detail=false){if(!row)return null;const t=decode(row.record);t.annotation={...defaultAnnotation,...(row.annotation?decode(row.annotation):{})};const branch=t.branches?.find(b=>b.id===t.annotation.branchId);if(branch){t.summary=branch.summary;t.summaryEvidence=branch.summaryEvidence;t.goal=branch.goal;}t.completion=t.annotation.manualStatus||t.completion;if(!detail)delete t.events;return t;}
+ async get(id){const [r]=await this.rows(`SELECT t.*,a.value annotation ${join} WHERE t.id=?`,[id]);return this.hydrate(r,true);}
+ async all(detail=false){return (await this.rows(`SELECT t.*,a.value annotation ${join} ORDER BY t.updated_at DESC`)).map(r=>this.hydrate(r,detail));}
+ async list({q='',provider='',project='',status='',page=1,recent=false,start,end}={}){
+  const predicates=['1=1'],params=[];for(const [v,e]of [[provider,'t.provider=?'],[project,'t.project_id=?'],[status,`${state}=?`]])if(v){predicates.push(e);params.push(v);}
+  if(recent){predicates.push('t.updated_at>=?');params.push(Date.now()-30*86400000);}if(start!==undefined){predicates.push('t.updated_at>=?');params.push(Number(start));}if(end!==undefined){predicates.push('t.created_at<?');params.push(Number(end));}
+  if(q.trim()){predicates.push("LOCATE(CONVERT(? USING utf8mb4) COLLATE utf8mb4_0900_ai_ci,CONCAT(t.search_text,' ',COALESCE(CAST(a.value AS CHAR CHARACTER SET utf8mb4),'')) COLLATE utf8mb4_0900_ai_ci)>0");params.push(q.trim());}
+  const where=predicates.join(' AND ');const [count]=await this.rows(`SELECT COUNT(*) total ${join} WHERE ${where}`,params);const safePage=Math.max(1,Math.floor(Number(page)||1));
+  const rows=await this.rows(`SELECT t.*,a.value annotation ${join} WHERE ${where} ORDER BY t.updated_at DESC LIMIT 30 OFFSET ${(safePage-1)*30}`,params);return {tasks:rows.map(r=>this.hydrate(r)),total:Number(count.total),page:safePage,pageSize:30};
+ }
+ async patch(id,patch){return this.transaction(async tx=>{await tx.rows('SELECT id FROM ad_tasks WHERE id=? FOR UPDATE',[id]);const t=await tx.get(id);if(!t)return null;const a=tx.scrub({...t.annotation,...patch});if(patch.manualStatus==='done'&&t.annotation.manualStatus!=='done')a.confirmedAt=Date.now();else if('manualStatus'in patch&&patch.manualStatus!=='done')a.confirmedAt=null;await tx.rows('INSERT INTO ad_annotations VALUES(?,?,?) ON DUPLICATE KEY UPDATE value=VALUES(value),updated_at=VALUES(updated_at)',[id,JSON.stringify(a),Date.now()]);return tx.get(id);});}
+ async checkpoint(file){const [r]=await this.rows('SELECT * FROM ad_checkpoints WHERE path_hash=?',[digest(file)]);return r?{...r,task:decode(r.state)}:null;}
+ async saveCheckpoint(file,stat,offset,line,task){await this.rows('INSERT INTO ad_checkpoints VALUES(?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE size=VALUES(size),mtime=VALUES(mtime),offset=VALUES(offset),line=VALUES(line),state=VALUES(state)',[digest(file),file,stat.size,stat.mtimeMs,offset,line,JSON.stringify(this.scrub({...task,_newEvents:[]}))]);}
+ async events({start=0,end=Date.now()+1,project='',provider='',task='',limit=10000}={}){const p=[start,end];let f='';for(const [v,k]of [[project,'t.project_id'],[provider,'t.provider'],[task,'t.id']])if(v){f+=` AND ${k}=?`;p.push(v);}return (await this.rows(`SELECT e.record,t.id task_id,JSON_UNQUOTE(JSON_EXTRACT(t.record,'$.title')) title,t.project_id,t.provider FROM ad_events e JOIN ad_tasks t ON t.id=e.task_id WHERE e.timestamp>=? AND e.timestamp<?${f} ORDER BY e.timestamp LIMIT ${Math.min(100000,Math.max(1,Number(limit)))}`,p)).map(r=>({...decode(r.record),taskId:r.task_id,title:r.title,projectId:r.project_id,provider:r.provider}));}
+ async activityDays({start,end,project='',provider=''}){const params=[start,end];let filter='';for(const[v,k]of [[project,'t.project_id'],[provider,'t.provider']])if(v){filter+=` AND ${k}=?`;params.push(v);}return(await this.rows(`SELECT FLOOR((e.timestamp+28800000)/86400000) day,COUNT(*) count FROM ad_events e JOIN ad_tasks t ON t.id=e.task_id WHERE e.timestamp>=? AND e.timestamp<?${filter} GROUP BY day`,params)).map(r=>({date:new Date(Number(r.day)*86400000).toISOString().slice(0,10),count:Number(r.count)}));}
+ async overview(sources,progress){
+  const today=dayStart();const [counts]=await this.rows(`SELECT COUNT(*) total,SUM(t.updated_at>=?) recent,SUM(${state} IN ('blocked','unconfirmed')) needsAttention,SUM(t.updated_at>=?) today,SUM(${state}='done' AND CAST(JSON_UNQUOTE(JSON_EXTRACT(a.value,'$.confirmedAt')) AS UNSIGNED)>=?) doneToday ${join}`,[Date.now()-30*86400000,today,today]);
+  const projects=(await this.rows("SELECT project_id id,MAX(JSON_UNQUOTE(JSON_EXTRACT(record,'$.projectName'))) name,MAX(JSON_UNQUOTE(JSON_EXTRACT(record,'$.projectRoot'))) root,COUNT(*) count,MAX(updated_at) updatedAt,GROUP_CONCAT(DISTINCT provider) providers FROM ad_tasks GROUP BY project_id ORDER BY updatedAt DESC")).map(r=>({...r,providers:r.providers.split(','),count:Number(r.count),updatedAt:Number(r.updatedAt)}));
+  const providers=await this.rows("SELECT provider,COUNT(*) count,SUM(JSON_UNQUOTE(JSON_EXTRACT(record,'$.partial'))='true') partial FROM ad_tasks GROUP BY provider");const hourly=Array(24).fill(0);(await this.rows('SELECT FLOOR((timestamp-?)/3600000) hour,COUNT(*) count FROM ad_events WHERE timestamp>=? AND timestamp<? GROUP BY hour',[today,today,today+86400000])).forEach(r=>hourly[r.hour]=Number(r.count));
+  return {...Object.fromEntries(Object.entries(counts).map(([k,v])=>[k,Number(v||0)])),projects,sources:sources.map(s=>{const records=providers.find(r=>r.provider===s.id);const partial=Number(records?.partial||0);return {...s,count:Number(records?.count||0),state:s.state==='ready'&&partial?'partial':s.state,message:s.message+(s.state==='ready'&&partial?` 其中 ${partial} 个会话索引仅有部分内容。`:'')};}),hourly,importing:progress.active,importProgress:progress,updatedAt:Date.now()};
+ }
+ async documents(kind){return (await this.rows('SELECT record FROM ad_documents WHERE kind=? ORDER BY updated_at DESC LIMIT 2000',[kind])).map(r=>decode(r.record));}
+ async document(id,kind){const [r]=await this.rows('SELECT record FROM ad_documents WHERE id=? AND kind=?'+(this.scoped?' FOR UPDATE':''),[id,kind]);return r?decode(r.record):null;}
+ async putDocument(kind,record){if(!this.scoped)return this.transaction(tx=>tx.putDocument(kind,record));if(record.id){const [existing]=await this.rows('SELECT kind FROM ad_documents WHERE id=? FOR UPDATE',[record.id]);if(existing&&existing.kind!==kind)throw new Error('对象 ID 已被其他类型使用');}const item={...this.scrub(record),id:record.id||randomUUID(),updatedAt:Date.now()};await this.rows('INSERT INTO ad_documents VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE title=VALUES(title),updated_at=VALUES(updated_at),record=VALUES(record)',[item.id,kind,String(item.title||kind).slice(0,255),item.updatedAt,JSON.stringify(item)]);return item;}
+ async deleteDocument(id,kind){await this.rows('DELETE FROM ad_documents WHERE id=? AND kind=?'+(this.scoped?' FOR UPDATE':''),[id,kind]);return true;}
+ async export(id){const tasks=id?[await this.get(id)].filter(Boolean):(await this.all()).filter(t=>t.updatedAt>=dayStart());if(id&&!tasks.length)return null;return `# AgentDock · ${id?'任务':'今日'}摘要\n\n来源陈述与用户确认分别记录。\n\n${tasks.map(t=>`## ${t.title}\n\n- 来源：${t.provider} / ${t.surface}\n- 项目：${t.projectName}\n- 状态：${t.completion}\n- 依据：${t.evidence.path}:${t.evidence.line||''}\n\n### 目标\n\n${t.goal}\n\n### 摘要${t.annotation.summaryOverride?'（用户编辑）':'（来源提取）'}\n\n${t.annotation.summaryOverride||t.summary}\n\n### 待办\n\n${t.todos.map(d=>`- [${d.status==='completed'?'x':' '}] ${d.text}`).join('\n')}\n\n### 关联目标\n\n${t.annotation.goalGroup}\n\n### 我的备注\n\n${t.annotation.note}\n`).join('\n---\n')}`;}
+ async close(){if(!this.scoped)await this.db.end();}
 }
-export function dayStart(now = Date.now()) { const offset = 8 * 3600000; return Math.floor((now + offset) / 86400000) * 86400000 - offset; }

@@ -1,8 +1,9 @@
 import { createReadStream, existsSync, watch } from 'node:fs';
-import { readdir, stat } from 'node:fs/promises';
+import { readdir, stat, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setImmediate as yieldThread } from 'node:timers/promises';
+import { consumeExtra, zstdFrames, decodeFrame } from './adapters.mjs';
 import { consumeClaude, consumeCodex, cursorTask, emptyTask, epoch, finalize, PARSER_VERSION } from './parsers.mjs';
 
 export async function* walk(root, extension) {
@@ -18,6 +19,7 @@ export async function readLog(file, provider, previous, meta, onProgress) {
   const reset = !previous || previous.task._parserVersion !== PARSER_VERSION || previous.task._sourceInode !== stats.ino || stats.size < previous.offset || (stats.size === previous.size && stats.mtimeMs !== previous.mtime);
   let offset = reset ? 0 : previous.offset; let line = reset ? 0 : previous.line;
   let task = reset ? emptyTask(provider, path.basename(file, '.jsonl'), file, meta) : previous.task;
+  task._newEvents = [];
   if (!reset && stats.mtimeMs === previous.mtime && stats.size === previous.size) {
     const metadataChanged = meta && ((meta.title && task.title !== meta.title) || (meta.archived !== undefined && task.archived !== meta.archived));
     if (!metadataChanged) return { unchanged: true, task, stats, offset, line, unfinished: Boolean(task._unfinished) };
@@ -34,7 +36,7 @@ export async function readLog(file, provider, previous, meta, onProgress) {
         const raw = pending.subarray(0, newline).toString('utf8').replace(/\r$/, '');
         offset += newline + 1; pending = pending.subarray(newline + 1); line++;
         if (raw.trim()) {
-          try { const record = JSON.parse(raw); const evidence = { path: file, line }; task = provider === 'codex' ? consumeCodex(task, record, evidence) : consumeClaude(task, record, evidence); }
+          try { const record = JSON.parse(raw); const evidence = { path: file, line }; task = provider === 'codex' ? consumeCodex(task, record, evidence) : provider === 'claude' ? consumeClaude(task, record, evidence) : consumeExtra(task, record, evidence); }
           catch { task.partial = true; }
         }
         if (++consumed % 250 === 0) { onProgress?.(); await yieldThread(); }
@@ -50,20 +52,56 @@ export async function readLog(file, provider, previous, meta, onProgress) {
 function readonly(file) { const db = new DatabaseSync(file, { readOnly: true, timeout: 150 }); db.exec('PRAGMA query_only=ON;'); return db; }
 function safeRows(db, table) { try { return db.prepare(`SELECT * FROM ${table}`).all(); } catch { return []; } }
 function parsed(value) { try { return JSON.parse(value); } catch { return null; } }
+export async function readCompressed(file, previous, meta = {}) {
+  const stats = await stat(file);
+  const reset = !previous || previous.task._parserVersion !== PARSER_VERSION || previous.task._sourceInode !== stats.ino || stats.size < previous.offset || (stats.size === previous.size && stats.mtimeMs !== previous.mtime);
+  if (!reset && stats.size === previous.size && stats.mtimeMs === previous.mtime) return { unchanged: true, task: previous.task, stats, unfinished: previous.task._unfinished };
+  if (stats.size > 128 * 1024 * 1024) throw new Error('压缩日志超过当前读取上限');
+  const bytes = await readFile(file); const scanned = zstdFrames(bytes);
+  let task = reset ? emptyTask('deepseek', path.basename(path.dirname(file)), file, meta) : previous.task;
+  task._newEvents = []; let offset = reset ? 0 : previous.offset; let line = reset ? 0 : previous.line; let pending = reset ? '' : task._compressedPending || '';
+  for (const frame of scanned.frames) {
+    if (frame.end <= offset) continue;
+    pending += decodeFrame(bytes.subarray(frame.start, frame.end)); const rows = pending.split('\n'); pending = rows.pop();
+    for (const raw of rows) { line++; if (!raw.trim()) continue; try { task = consumeExtra(task, JSON.parse(raw), { path: file, line, locator: `frame=${frame.start}` }); } catch { task.partial = true; } }
+    offset = frame.end; await yieldThread();
+  }
+  task.evidence = { path: file, line: 1 }; task._compressedPending = pending;
+  task._parserVersion = PARSER_VERSION; task._sourceInode = stats.ino; task._unfinished = scanned.incomplete || Boolean(pending);
+  return { task: finalize(task), stats, offset, line, unfinished: task._unfinished, reset: reset && Boolean(previous) };
+}
+const databaseFailure = e => ['ECONNREFUSED','ECONNRESET','PROTOCOL_CONNECTION_LOST','POOL_CLOSED','ETIMEDOUT','EPIPE','ER_SERVER_SHUTDOWN'].includes(e.code);
 export class Collector {
-  constructor(store, config, notify) {
-    this.store = store; this.config = config; this.notify = notify; this.busy = false; this.stopped = false; this.dirty = false; this.watchers = [];
-    this.progress = { active: false, completed: 0, total: 0 }; this.codexMeta = new Map();
+  constructor(store, config, notify, onError = () => {}) {
+    config = { pi: path.join(config.home, '.pi', 'agent'), deepseek: path.join(config.home, '.dsh'), workbuddy: path.join(config.home, '.workbuddy'), ...config };
+    this.onError = onError; this.store = store; this.config = config; this.notify = notify; this.busy = false; this.stopped = false; this.dirty = false; this.watchers = [];
+    this.changedDates=new Set();this.progress = { active: false, completed: 0, total: 0 }; this.codexMeta = new Map();
     this.sources = [
       { id: 'codex', name: 'Codex / Codex CLI', state: 'scanning', message: '等待扫描会话索引与日志', locations: [config.codex] },
       { id: 'claude', name: 'Claude Code / CLI', state: 'scanning', message: '等待扫描项目会话日志', locations: [config.claude] },
       { id: 'cursor', name: 'Cursor', state: 'scanning', message: '等待检查本机会话数据库', locations: [config.cursor] },
-      { id: 'pi', name: 'Pi CLI', state: 'planned', message: '第二阶段接入；首版尚未采集 Pi 会话', locations: existsSync(path.join(config.home, '.pi', 'agent', 'sessions')) ? [path.join(config.home, '.pi', 'agent', 'sessions')] : [] },
-      { id: 'deepseek', name: 'DeepSeek Harness', state: 'planned', message: '待确认具体 Harness 版本与会话记录来源', locations: [] },
-      { id: 'workbuddy', name: 'WorkBuddy', state: 'planned', message: '待确认当前版本的任务持久化位置与导出方式', locations: [] },
+      { id: 'pi', name: 'Pi CLI', state: 'scanning', message: '读取本机分支会话日志', locations: [config.pi] },
+      { id: 'deepseek', name: 'DeepSeek Harness', state: 'scanning', message: '读取本机压缩会话日志', locations: [config.deepseek] },
+      { id: 'workbuddy', name: 'WorkBuddy', state: 'scanning', message: '读取本机会话与待办', locations: [config.workbuddy] },
     ].map(s => ({ ...s, syncAt: null, count: 0 }));
   }
   source(id) { return this.sources.find(s => s.id === id); }
+  async workbuddyIndex() {
+    if (this.config.disabled?.includes('workbuddy')) return;
+    let db; this.workbuddyMeta = new Map();
+    const file = path.join(this.config.workbuddy, 'workbuddy.db');
+    if (!existsSync(file)) return;
+    try {
+      db = readonly(file);
+      for (const row of db.prepare('SELECT id,cwd,title,custom_title,created_at,updated_at FROM sessions WHERE deleted_at IS NULL').all()) {
+        const meta = { nativeId: row.id, cwd: row.cwd || '', title: row.custom_title || row.title || '', createdAt: epoch(row.created_at), updatedAt: epoch(row.updated_at), evidence: { path: file, locator: `sessions.id=${row.id}` } };
+        this.workbuddyMeta.set(row.id, meta);
+        const task = finalize(emptyTask('workbuddy', row.id, file, { ...meta, partial: true, surface: '桌面/CLI' }));
+        if (!await this.store.get(task.id)) await this.store.upsert(task);
+      }
+    } catch (e) { if(databaseFailure(e))throw e; this.source('workbuddy').message = '元数据暂不可读，继续读取会话日志'; }
+    finally { db?.close(); }
+  }
   async codexIndex() {
     const source = this.source('codex'); let db;
     try {
@@ -76,12 +114,12 @@ export class Collector {
         const meta = { nativeId: row.id, title: row.name || row.title || '', cwd: row.cwd || '', createdAt: epoch(row.created_at_ms || row.created_at), updatedAt: epoch(row.updated_at_ms || row.updated_at), archived: Boolean(row.archived), evidence: { path: file, locator: `threads.id=${row.id}` }, surface: /desktop|daybreak/i.test(row.originator || '') ? '桌面' : /cli/i.test(row.source || '') ? 'CLI' : /vscode/i.test(row.source || '') ? '编辑器' : '桌面/服务' };
         if (row.rollout_path) this.codexMeta.set(path.resolve(row.rollout_path), meta);
         const task = finalize(emptyTask('codex', row.id, file, meta));
-        const existing = this.store.get(task.id);
+        const existing = await this.store.get(task.id);
         // Metadata must never overwrite an already parsed transcript or its evidence.
-        if (!existing) { task.partial = true; this.store.upsert(task); }
+        if (!existing) { task.partial = true; await this.store.upsert(task); }
       }
       source.locations = [file, path.join(this.config.codex, 'sessions'), path.join(this.config.codex, 'archived_sessions')];
-    } catch (e) { source.state = 'partial'; source.message = `索引暂不可读，继续读取日志：${e.message}`; }
+    } catch (e) { if(databaseFailure(e))throw e; source.state = 'partial'; source.message = '索引暂不可读，继续读取日志'; }
     finally { db?.close(); }
   }
   async cursorIndex() {
@@ -111,9 +149,9 @@ export class Collector {
           const body = bodies.get(header.composerId); const task = cursorTask(header, body, file);
           if (!task) { drafts++; continue; }
           if (task.partial) partialCount++;
-          this.store.upsert(finalize(task)); parsedCount++;
+          await this.store.upsert(finalize(task)); parsedCount++;
         }
-      } catch { errors++; }
+      } catch (e) { if(databaseFailure(e))throw e; errors++; }
       finally { db?.close(); }
       await yieldThread();
     }
@@ -124,55 +162,66 @@ export class Collector {
   async scan() {
     if (this.busy || this.stopped) { this.dirty = true; return; } this.busy = true; this.dirty = false;
     try {
-      await this.codexIndex(); const files = [];
-      for (const [provider, roots] of [['codex', [path.join(this.config.codex, 'sessions'), path.join(this.config.codex, 'archived_sessions')]], ['claude', [path.join(this.config.claude, 'projects')]]]) {
-        for (const root of roots) for await (const file of walk(root, '.jsonl')) {
+      if (!this.config.disabled?.includes('codex')) await this.codexIndex();
+      await this.workbuddyIndex(); const files = [];
+      for (const [provider, roots] of [['codex', [path.join(this.config.codex, 'sessions'), path.join(this.config.codex, 'archived_sessions')]], ['claude', [path.join(this.config.claude, 'projects')]], ['pi', [path.join(this.config.pi, 'sessions')]], ['deepseek', [path.join(this.config.deepseek, 'sessions')]], ['workbuddy', [path.join(this.config.workbuddy, 'projects')]]]) {
+        if (this.config.disabled?.includes(provider)) continue;
+        for (const root of roots) for await (const file of walk(root, '')) {
+          if (!file.endsWith('.jsonl') && !(provider === 'deepseek' && file.endsWith('.jsonl.zstd'))) continue;
           try { const stats = await stat(file); files.push({ file, provider, stats }); } catch { /* Concurrent rotation: retry next cycle. */ }
         }
       }
       // Use recorded update timestamps when available, then mtime. Newest tasks become usable first.
       files.sort((a, b) => (this.codexMeta.get(b.file)?.updatedAt || b.stats.mtimeMs) - (this.codexMeta.get(a.file)?.updatedAt || a.stats.mtimeMs));
       this.progress = { active: true, completed: 0, total: files.length }; this.notify();
-      const errors = { codex: 0, claude: 0 }; const partial = { codex: 0, claude: 0 };
+      const errors = Object.fromEntries(this.sources.map(s => [s.id,0])); const partial = {...errors};
       let changed = 0;
       for (const item of files) {
         if (this.stopped) break;
         const subagent = item.provider === 'claude' && item.file.split(path.sep).includes('subagents');
         const meta = this.codexMeta.get(item.file) || { archived: item.file.includes('archived_sessions'), surface: subagent ? '子代理' : item.provider === 'claude' ? 'CLI' : '未知入口', ...(subagent ? { subagentId: path.basename(item.file, '.jsonl') } : {}) };
         try {
-          const previous = this.store.checkpoint(item.file);
-          const result = await readLog(item.file, item.provider, previous, meta);
+          const previous = await this.store.checkpoint(item.file);
+          const result = item.file.endsWith('.zstd') ? await readCompressed(item.file, previous, meta) : await readLog(item.file, item.provider, previous, meta);
+          if (item.provider === 'workbuddy') {
+            const details = this.workbuddyMeta?.get(result.task.nativeId);
+            if (details) { result.task.title = details.title || result.task.title; result.task.cwd = details.cwd || result.task.cwd; }
+            const todos = [];
+            for await (const todoFile of walk(path.join(this.config.workbuddy, 'tasks', result.task.nativeId), '.json')) { try { const todo = JSON.parse(await readFile(todoFile, 'utf8')); todos.push({ text: todo.subject || todo.description || '', status: todo.status || 'pending' }); } catch { result.task.partial = true; } }
+            if (JSON.stringify(todos) !== JSON.stringify(result.task.todos)) { result.task.todos = todos; result.unchanged = false; }
+            result.task = finalize(result.task);
+          }
+          if (['workbuddy','deepseek'].includes(item.provider) && !result.task.goal && !result.task.summary && !result.task.partial) { result.task.partial = true; result.unchanged = false; }
           if (!result.unchanged) {
-            this.store.db.exec('BEGIN');
-            try {
-              const sameSource = this.store.get(result.task.id)?.evidence.path === item.file;
-              this.store.upsert(result.task, result.reset && sameSource);
-              this.store.saveCheckpoint(item.file, result.stats, result.offset, result.line, result.task);
-              this.store.db.exec('COMMIT');
-            } catch (e) { this.store.db.exec('ROLLBACK'); throw e; }
-            changed++;
+            await this.store.transaction(async tx => {
+              const sameSource = (await tx.get(result.task.id))?.evidence.path === item.file;
+              await tx.upsert(result.task, result.reset && sameSource);
+              await tx.saveCheckpoint(item.file, result.stats, result.offset, result.line, result.task);
+            });
+            for(const event of result.task._newEvents||[])if(event.timestamp)this.changedDates.add(new Date(event.timestamp+28800000).toISOString().slice(0,10));changed++;
           }
           if (result.task.partial || result.unfinished) partial[item.provider]++;
-        } catch { errors[item.provider]++; }
+        } catch (e) { if(databaseFailure(e))throw e; errors[item.provider]++; }
         this.progress.completed++;
         if (changed && changed % 8 === 0) this.notify();
         await yieldThread();
       }
-      for (const id of ['codex', 'claude']) {
+      for (const id of ['codex', 'claude', 'pi', 'deepseek', 'workbuddy']) {
         const source = this.source(id); const count = files.filter(file => file.provider === id).length;
+        if (this.config.disabled?.includes(id)) { source.state = 'missing'; source.message = '用户已停用采集'; continue; }
         source.state = !count ? 'missing' : errors[id] === count ? 'error' : errors[id] || partial[id] ? 'partial' : 'ready';
         source.message = !count ? '未找到可扫描的会话日志；已保留现有索引' : `已检查 ${count} 份日志${errors[id] ? `，${errors[id]} 份暂不可读` : ''}${partial[id] ? `，${partial[id]} 份记录不完整` : ''}。回复结束与整体完成分别记录；原始文件只读。`;
         source.syncAt = Date.now();
       }
-      await this.cursorIndex();
-    } finally { this.progress.active = false; this.busy = false; this.notify(); }
+      if (!this.config.disabled?.includes('cursor')) await this.cursorIndex();
+    } finally { this.progress.active = false; this.busy = false; this.notify({dates:[...this.changedDates]});this.changedDates.clear(); }
   }
   async start() {
-    for (const root of [path.join(this.config.codex, 'sessions'), path.join(this.config.codex, 'archived_sessions'), path.join(this.config.claude, 'projects')]) {
+    for (const root of [path.join(this.config.codex, 'sessions'), path.join(this.config.codex, 'archived_sessions'), path.join(this.config.claude, 'projects'), path.join(this.config.pi,'sessions'), path.join(this.config.deepseek,'sessions'), path.join(this.config.workbuddy,'projects')]) {
       try { const watcher = watch(root, { recursive: true }, () => { this.dirty = true; }); watcher.on('error', () => { this.dirty = true; }); this.watchers.push(watcher); } catch { /* Polling also handles roots created after startup. */ }
     }
-    this.timer = setInterval(() => { void this.scan().catch(() => { this.notify(); }); }, 3000);
+    this.timer = setInterval(() => { void this.scan().catch(e => { this.onError(e); this.notify(); }); }, 3000);
     await this.scan();
   }
-  stop() { this.stopped = true; clearInterval(this.timer); this.watchers.forEach(w => w.close()); }
+  async stop() { this.stopped = true; clearInterval(this.timer); this.watchers.forEach(w => w.close()); while(this.busy) await new Promise(resolve=>setTimeout(resolve,20)); }
 }

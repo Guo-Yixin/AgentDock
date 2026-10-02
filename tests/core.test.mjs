@@ -63,41 +63,17 @@ test('Malformed and unknown events do not halt history import; context-only prom
   const parsed = await readLog(file, 'codex', null, {}); assert.equal(parsed.task.partial, true);
   assert.equal(cleanText('# AGENTS.md instructions\n<INSTRUCTIONS>Do things</INSTRUCTIONS>\n<environment_context>hidden</environment_context>'), '');
 });
-test('Store: duplicate imports, restart, user overrides, goal links, and literal Chinese search', () => {
-  const file = path.join(temp(), 'store.sqlite'); let store = openStore(file);
-  const task = finalize(emptyTask('codex', 'stable-id', 'sample.jsonl', { title: '修复同步', summary: '来源原文', updatedAt: Date.now() }));
-  store.upsert(task); store.upsert(task); assert.equal(store.all().length, 1);
-  store.patch(task.id, { note: '验证结果', summaryOverride: '我补充的摘要', manualStatus: 'done', goalGroup: '交付首版' });
-  const confirmedAt = store.get(task.id).annotation.confirmedAt;
-  store.patch(task.id, { note: '更新备注' }); assert.equal(store.get(task.id).annotation.confirmedAt, confirmedAt);
-  store.upsert({ ...task, summary: '更新来源摘要' }); store.close(); store = openStore(file);
-  const hydrated = store.get(task.id); assert.equal(hydrated.annotation.note, '更新备注'); assert.equal(hydrated.completion, 'done');
-  assert.equal(hydrated.annotation.summaryOverride, '我补充的摘要'); assert.equal(store.list({ q: '首版' }).total, 1); assert.equal(store.list({ q: '同步' }).total, 1);
-  assert.match(store.export(task.id), /用户编辑/); store.close();
-});
 test('Collector reads Cursor sources without changing database contents', async () => {
   const dir = temp(); const root = path.join(dir, 'Cursor', 'globalStorage'); mkdirSync(root, { recursive: true });
   const file = path.join(root, 'state.vscdb'); const db = new DatabaseSync(file);
   db.exec('CREATE TABLE composerHeaders(composerId TEXT,value TEXT); CREATE TABLE cursorDiskKV(key TEXT,value TEXT)');
   db.prepare('INSERT INTO composerHeaders VALUES(?,?)').run('cursor-id', JSON.stringify({ composerId: 'cursor-id', createdAt: Date.now(), workspaceIdentifier: dir })); db.close();
   const checksum = () => createHash('sha256').update(readFileSync(file)).digest('hex'); const before = checksum();
-  const store = openStore(path.join(dir, 'index.sqlite')); const collector = new Collector(store, { home: dir, codex: dir, claude: dir, cursor: path.join(dir, 'Cursor') }, () => {});
+  const values = new Map(); const store = { upsert: async t => values.set(t.id,t), all: () => [...values.values()], close: () => {} }; const collector = new Collector(store, { home: dir, codex: dir, claude: dir, cursor: path.join(dir, 'Cursor') }, () => {});
   await collector.cursorIndex(); assert.equal(checksum(), before); assert.equal(collector.source('cursor').state, 'partial'); assert.equal(store.all().length, 1); store.close();
 });
 test('Project grouping resolves repository subfolders and UTC+8 midnight', () => {
   const dir = temp(); mkdirSync(path.join(dir, '.git')); mkdirSync(path.join(dir, 'src'));
   assert.equal(projectFor(dir).id, projectFor(path.join(dir, 'src')).id);
   assert.equal(dayStart(Date.parse('2026-10-01T01:00:00Z')), Date.parse('2026-09-30T16:00:00Z'));
-});
-test('Import resumes from a durable checkpoint after restarting the store', async () => {
-  const dir = temp(); const file = path.join(dir, 'resume.jsonl'); const index = path.join(dir, 'index.sqlite');
-  writeFileSync(file, records.slice(0, 2).map(row => JSON.stringify(row)).join('\n') + '\n');
-  let store = openStore(index); const first = await readLog(file, 'codex', null, {});
-  store.upsert(first.task); store.saveCheckpoint(file, first.stats, first.offset, first.line, first.task); store.close();
-  appendFileSync(file, records.slice(2).map(row => JSON.stringify(row)).join('\n') + '\n');
-  store = openStore(index); const second = await readLog(file, 'codex', store.checkpoint(file), {});
-  store.upsert(second.task); store.saveCheckpoint(file, second.stats, second.offset, second.line, second.task);
-  assert.equal(store.all().length, 1); assert.equal(store.checkpoint(file).line, 4);
-  assert.equal(store.get(second.task.id).summary, '已实现列表，待你验证。');
-  assert.equal(store.get(second.task.id).completion, 'unconfirmed'); store.close();
 });
