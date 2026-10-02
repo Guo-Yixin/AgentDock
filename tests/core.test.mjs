@@ -77,3 +77,23 @@ test('Project grouping resolves repository subfolders and UTC+8 midnight', () =>
   assert.equal(projectFor(dir).id, projectFor(path.join(dir, 'src')).id);
   assert.equal(dayStart(Date.parse('2026-10-01T01:00:00Z')), Date.parse('2026-09-30T16:00:00Z'));
 });
+
+test('Cursor: nested workspace URI, body update time and missing bubbles stay accurate',()=>{
+  const created=Date.parse('2026-09-30T08:00:00Z'), updated=created+86400000;
+  const header={composerId:'nested-workspace',createdAt:created,lastUpdatedAt:null,isArchived:true};
+  const body={workspaceIdentifier:{id:'workspace',uri:{fsPath:path.resolve('artifacts/unit/project')}},lastUpdatedAt:updated,fullConversationHeadersOnly:[{bubbleId:'user'},{bubbleId:'missing'}],conversationMap:{user:{bubbleId:'user',type:1,text:'核对历史会话',createdAt:new Date(created).toISOString()}}};
+  const t=cursorTask(header,body,'sample.vscdb');assert.equal(t.cwd,body.workspaceIdentifier.uri.fsPath);assert.equal(t.updatedAt,updated);assert.equal(t.title,'核对历史会话');assert.equal(t.partial,true);assert.equal(t.archived,true);
+  assert.equal(cursorTask({...header,isDraft:true},null,'sample.vscdb'),null);
+});
+
+test('Cursor: separate bubbles follow header order, exclude tools and keep complete history',async()=>{
+  const dir=temp(),root=path.join(dir,'Cursor'),global=path.join(root,'globalStorage');mkdirSync(global,{recursive:true});const file=path.join(global,'state.vscdb');const db=new DatabaseSync(file);db.exec('CREATE TABLE composerHeaders(composerId TEXT,value TEXT);CREATE TABLE cursorDiskKV(key TEXT,value TEXT)');
+  const created=Date.parse('2026-09-30T08:00:00Z');const header={composerId:'separate-id',createdAt:created,isArchived:true,name:'历史任务'};
+  db.prepare('INSERT INTO composerHeaders VALUES(?,?)').run(header.composerId,JSON.stringify(header));
+  db.prepare('INSERT INTO cursorDiskKV VALUES(?,?)').run('composerData:'+header.composerId,JSON.stringify({composerId:header.composerId,createdAt:created,fullConversationHeadersOnly:[{bubbleId:'u'},{bubbleId:'tool'},{bubbleId:'thinking',grouping:{hasThinking:true}},{bubbleId:'a'}],conversationMap:{},workspaceIdentifier:{uri:{fsPath:dir}}}));
+  const put=db.prepare('INSERT INTO cursorDiskKV VALUES(?,?)');for(const [id,entry]of [['a',{type:2,text:'已完成本轮回复',createdAt:new Date(created+10000).toISOString()}],['thinking',{type:2,text:'不应发送的内部推理'}],['tool',{type:2,text:'不应发送的工具结果',toolFormerData:{}}],['u',{type:1,text:'修复历史读取',createdAt:new Date(created).toISOString()}]])put.run('bubbleId:'+header.composerId+':'+id,JSON.stringify(entry));db.close();
+  const before=createHash('sha256').update(readFileSync(file)).digest('hex'),values=new Map();const store={get:async id=>values.get(id),upsert:async t=>{values.set(t.id,t);return true;}};const collector=new Collector(store,{home:dir,codex:dir,claude:dir,cursor:root},()=>{});
+  await collector.cursorIndex();const task=[...values.values()][0];assert.equal(task.goal,'修复历史读取');assert.equal(task.summary,'已完成本轮回复');assert.equal(task.partial,false);assert.equal(task.completion,'unconfirmed');assert.equal(task.archived,true);assert.deepEqual(task.events.map(e=>e.kind),['user','assistant']);assert.match(task.summaryEvidence.locator,/bubbleId=a/);assert.equal(task.cwd,dir);assert.equal(collector.source('cursor').state,'ready');
+  const workspace=path.join(root,'workspaceStorage','same-project');mkdirSync(workspace,{recursive:true});const duplicate=new DatabaseSync(path.join(workspace,'state.vscdb'));duplicate.exec('CREATE TABLE composerHeaders(composerId TEXT,value TEXT)');duplicate.prepare('INSERT INTO composerHeaders VALUES(?,?)').run(header.composerId,JSON.stringify({...header,lastUpdatedAt:created+20000}));duplicate.close();
+  await collector.cursorIndex();assert.equal(values.size,1);assert.equal(values.get(task.id).summary,task.summary);assert.equal(values.get(task.id).partial,false);assert.equal(createHash('sha256').update(readFileSync(file)).digest('hex'),before);assert.ok(collector.changedDates.has('2026-09-30'));
+});

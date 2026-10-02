@@ -58,13 +58,15 @@ Windows 页面保存的数据库密码、DeepSeek Key 使用 **DPAPI 当前用�
 
 “工具接入”展示实际数据目录、程序入口（可从 PATH 发现时）、发现依据、目录是否存在、记录数量、同步时间和覆盖程度。可修改路径、验证并保存、扫描或停用。读取的是**会话数据目录**，不是可执行程序目录。
 
+例如 Cursor 安装在 `C:\Program Files\cursor` 时，通常仍从 `%APPDATA%\Cursor\User` 读取历史，不应把安装目录填入“数据目录”。新版独立消息按原始会话 ID 去重，支持嵌套工作区 URI；消息缺失继续标为部分接入，重复或仅有会话头的副本不会覆盖已导入的完整正文。
+
 路径优先级：`AGENTDOCK_*_ROOT` → 页面保存路径 → 工具原生环境变量 → 当前用户默认目录。只扫描已知或用户指定的会话目录，不扫描整个磁盘，不读取工具认证文件。
 
 | 来源 | 默认根目录 / 原生环境变量 | AgentDock 覆盖变量与实际覆盖 |
 | --- | --- | --- |
 | Codex / CLI | `~/.codex` / `CODEX_HOME` | `AGENTDOCK_CODEX_ROOT`；`state_*.sqlite` 会话索引、`sessions` 与 `archived_sessions` JSONL，区分桌面/CLI入口 |
 | Claude Code / CLI | `~/.claude` / `CLAUDE_CONFIG_DIR` | `AGENTDOCK_CLAUDE_ROOT`；`projects` JSONL、结构化待办、子代理独立会话 |
-| Cursor | 当前用户 `AppData/Roaming/Cursor/User` | `AGENTDOCK_CURSOR_ROOT`；`globalStorage` / `workspaceStorage` SQLite 的 `composerHeaders` / `composerData` |
+| Cursor | 当前用户 `AppData/Roaming/Cursor/User` | `AGENTDOCK_CURSOR_ROOT`；`globalStorage` / `workspaceStorage` SQLite 的 `composerHeaders`、`composerData` 与独立 `bubbleId:*` 消息，按会话头顺序还原正文 |
 | Pi CLI | `~/.pi/agent` / `PI_CODING_AGENT_DIR` | `AGENTDOCK_PI_ROOT`；`sessions` JSONL 的消息树与分支，默认最近日志分支明确为推断，详情可选择分支 |
 | DeepSeek Harness | `~/.dsh` / `DSH_HOME` | `AGENTDOCK_HARNESS_ROOT`；`sessions` 普通 JSONL 与 `.jsonl.zstd` 拼接帧、压缩文本片段，定位解压行、序号和帧偏移 |
 | WorkBuddy | `~/.workbuddy` | `AGENTDOCK_WORKBUDDY_ROOT`；`workbuddy.db` 元数据、`projects` 会话 JSONL 与 `tasks` 待办 |

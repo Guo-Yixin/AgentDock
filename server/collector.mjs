@@ -145,12 +145,31 @@ export class Collector {
           }
         }
         for (const [id, body] of bodies) if (!headers.some(h => h.composerId === id)) headers.push({ composerId: id, createdAt: body.createdAt });
+        // Recent Cursor versions store message bodies separately from composerData.
+        const bubbles = new Map();
+        if (tables.includes('cursorDiskKV')) for (const row of db.prepare("SELECT key,value FROM cursorDiskKV WHERE key LIKE 'bubbleId:%'").all()) {
+          const key = row.key.match(/^bubbleId:([^:]+):(.+)$/); if (!key) continue;
+          if (!bubbles.has(key[1])) bubbles.set(key[1], new Map());
+          bubbles.get(key[1]).set(key[2], parsed(row.value));
+        }
+        for (const [id, messages] of bubbles) {
+          const body = bodies.get(id) || { composerId: id, _missingMetadata: true };
+          const inline = new Map(Object.entries(body.conversationMap || {}).filter(([,value])=>value&&typeof value==='object').map(([key, value]) => [value.bubbleId || value.id || key, value]));
+          const order = body.fullConversationHeadersOnly?.length ? body.fullConversationHeadersOnly : [...messages].map(([bubbleId, value]) => ({ bubbleId, createdAt: value?.createdAt })).sort((a,b) => epoch(a.createdAt)-epoch(b.createdAt));
+          const entries = []; const seen = new Set();
+          for (const header of order) { const entry = inline.get(header.bubbleId) || messages.get(header.bubbleId); seen.add(header.bubbleId); if (entry) entries.push({ ...header, ...entry, bubbleId: header.bubbleId }); else body._missingBubbles = true; }
+          for (const [bubbleId, entry] of inline) if (!seen.has(bubbleId)) entries.push(entry);
+          body.conversationMap = entries; bodies.set(id, body);
+          if (!headers.some(h=>h.composerId===id)) headers.push({composerId:id,createdAt:body.createdAt});
+        }
         headersCount += headers.length;
         for (const header of headers) {
           const body = bodies.get(header.composerId); const task = cursorTask(header, body, file);
           if (!task) { drafts++; continue; }
           if (task.partial) partialCount++;
-          await this.store.upsert(finalize(task)); parsedCount++;
+          const existing = this.store.get ? await this.store.get(task.id) : null;
+          if (task.partial && existing && !existing.partial) { parsedCount++; continue; }
+          if(await this.store.upsert(finalize(task)))for(const e of task._newEvents||[])this.changedDates.add(new Date(e.timestamp+28800000).toISOString().slice(0,10));parsedCount++;
         }
       } catch (e) { if(databaseFailure(e))throw e; errors++; }
       finally { db?.close(); }

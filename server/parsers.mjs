@@ -122,23 +122,27 @@ export function consumeClaude(task, record, evidence) {
 export function cursorTask(header, body, file) {
   const nativeId = header.composerId || body?.composerId; if (!nativeId) return null;
   // A draft with no transcript is not a real task.
-  const hasConversation = body && (Object.keys(body.conversationMap || {}).length || body.fullConversationHeadersOnly?.length || body.text || body.name || body.todos?.length);
-  if (body?.isDraft && !hasConversation) return null;
+  const hasConversation = body && (Object.keys(body.conversationMap || {}).length || body.fullConversationHeadersOnly?.length || body.text || body.todos?.length);
+  if ((body?.isDraft || header.isDraft) && !hasConversation) return null;
   const evidence = { path: file, locator: `composerId=${nativeId}` };
-  const task = emptyTask('cursor', nativeId, file, { surface: '编辑器', title: body?.name || header.name || 'Cursor 会话（标题不可读）', createdAt: epoch(header.createdAt || body?.createdAt), updatedAt: epoch(header.lastUpdatedAt || body?.lastUpdatedAt || header.createdAt), archived: Boolean(header.isArchived), partial: !body, evidence });
+  const task = emptyTask('cursor', nativeId, file, { surface: '编辑器', title: body?.name || header.name || '', createdAt: epoch(header.createdAt || body?.createdAt), updatedAt: Math.max(epoch(header.lastUpdatedAt),epoch(body?.lastUpdatedAt),epoch(header.createdAt || body?.createdAt)), archived: Boolean(header.isArchived), partial: !body || Boolean(body._missingBubbles || body._missingMetadata), evidence });
   const workspace = body?.workspaceIdentifier || header.workspaceIdentifier;
-  task.cwd = typeof workspace === 'string' ? workspace : workspace?.fsPath || workspace?.path || '';
+  const uri = workspace?.uri;
+  task.cwd = typeof workspace === 'string' ? workspace : workspace?.fsPath || (typeof uri==='string'?uri:uri?.fsPath||uri?.external||uri?.path) || workspace?.path || '';
   if (task.cwd.startsWith('file:')) { try { task.cwd = decodeURIComponent(new URL(task.cwd).pathname).replace(/^\/([A-Za-z]:)/, '$1'); } catch { task.cwd = ''; } }
   const conversation = body?.conversationMap || {};
   const entries = Array.isArray(conversation) ? conversation : Object.values(conversation);
   for (const entry of entries) {
+    if (entry.toolFormerData || entry.grouping?.toolCallId || entry.grouping?.hasThinking || entry.capabilityType === 30) continue;
     const role = entry.role || (entry.type === 1 || entry.type === 'user' ? 'user' : entry.type === 2 || entry.type === 'assistant' ? 'assistant' : '');
     const text = contentText(entry.text || entry.content || entry.message?.content);
-    message(task, role, text, epoch(entry.timestamp || entry.createdAt, task.updatedAt), { ...evidence, locator: `${evidence.locator}; bubbleId=${entry.bubbleId || entry.id || '?'}` });
+    const timestamp=epoch(entry.timestamp || entry.createdAt, task.updatedAt);task.updatedAt=Math.max(task.updatedAt,timestamp);
+    message(task, role, text, timestamp, { ...evidence, locator: `${evidence.locator}; bubbleId=${entry.bubbleId || entry.id || '?'}` });
   }
   if (body?.text && !task.goal) message(task, 'user', contentText(body.text), task.createdAt, evidence);
   setTodos(task, body?.todos);
-  if (!entries.length) task.partial = true;
+  if (!entries.length || body?.fullConversationHeadersOnly?.some(h=>!entries.some(e=>(e.bubbleId||e.id)===h.bubbleId))) task.partial = true;
+  task.title ||= 'Cursor 会话（标题不可读）';
   if (header.hasBlockingPendingActions) task.activity = 'unknown';
   return task;
 }
