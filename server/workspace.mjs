@@ -72,7 +72,7 @@ export async function buildContext(store, refs, range = {}) {
     if (ref.type === 'task') {
       const t = await store.get(ref.id); if (!t) throw new Error('所选会话不存在');
       const branch = ref.branchId ? t.branches?.find(b => b.id === ref.branchId) : t.branches?.find(b => b.id === t.annotation.branchId);
-      title = t.title; evidence = t.evidence;
+      if(ref.branchId&&!branch)throw new Error('所选分支不存在');title = t.title; evidence = branch?.summaryEvidence||t.summaryEvidence||t.evidence;
       text = JSON.stringify({ title, goal: branch?.goal || t.goal, summary: t.annotation.summaryOverride || branch?.summary || t.summary, completion: t.completion, todos: t.todos, note: t.annotation.note });
       if (ref.includeTranscript) { const [count] = await store.rows('SELECT COUNT(*) n FROM ad_events WHERE task_id=? AND timestamp>=? AND timestamp<?',[t.id,range.start??Date.now()-30*86400000,range.end??Date.now()+1]);if(!branch&&Number(count.n)>100000)throw new Error('正文记录过多，请缩小日期范围');const events = branch?.events || await store.events({ task: t.id, start: range.start ?? Date.now() - 30 * 86400000, end: range.end ?? Date.now() + 1, limit: 100000 }); text += '\n正文：\n' + events.filter(e => ['user', 'assistant'].includes(e.kind)&&e.timestamp>=(range.start??Date.now()-30*86400000)&&e.timestamp<(range.end??Date.now()+1)).map(e => `${e.kind}: ${e.text}`).join('\n'); }
     }

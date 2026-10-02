@@ -3,7 +3,7 @@ import path from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 
 export const hash = value => createHash('sha256').update(value).digest('hex').slice(0, 24);
-export const PARSER_VERSION = 4;
+export const PARSER_VERSION = 5;
 export function epoch(value, fallback = 0) {
   if (typeof value === 'number') return value < 1e11 ? value * 1000 : value;
   const result = Date.parse(value); return Number.isFinite(result) ? result : fallback;
@@ -144,5 +144,5 @@ export function cursorTask(header, body, file) {
 }
 export function finalize(task) {
   const project = projectFor(task.cwd);
-  return { ...task, title: cleanText(task.title, 180) || '未命名会话', projectId: project.id, projectName: project.name, projectRoot: project.root, completion: task.todos.length && task.todos.every(todo => todo.status === 'completed') ? 'reported_complete' : 'unconfirmed' };
+  return { ...task, title: cleanText(task.title, 180) || '未命名会话', projectId: project.id, projectName: project.name, projectRoot: project.root, completion: task.sourceOutcome==='blocked'?'blocked':task.todos.length && task.todos.every(todo => todo.status === 'completed') ? 'reported_complete' : 'unconfirmed' };
 }

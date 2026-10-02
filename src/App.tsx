@@ -1,3 +1,4 @@
+import { request, saveFile } from './api';
 import { Workspace, SourceControls, ConnectionNotice, type ContextRef } from './Workspace';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, ArrowDownToLine, ArrowRight, ArrowUpRight, Check, ChevronLeft, ChevronRight, CircleHelp, Clock3, Command, FolderGit2, History, Layers3, LayoutDashboard, Link2, LoaderCircle, Menu, Orbit, Plug, Radio, RefreshCw, Search, ShieldCheck, Sparkles, Star, Terminal, X } from 'lucide-react';
@@ -23,15 +24,6 @@ function SourceIcon({ provider, small = false }: { provider: Provider; small?: b
 }
 function Status({ task }: { task: Task }) { return <span className={`status ${task.completion}`}><i />{statusNames[task.completion]}</span>; }
 function EvidenceText({ value }: { value: Evidence | null }) { return value ? <code className="evidence-path">{value.path}{value.line ? `:${value.line}` : ''}{value.locator ? ` · ${value.locator}` : ''}</code> : <p className="muted">尚无可定位的摘要来源</p>; }
-async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', ...options?.headers } });
-  if (!response.ok) { const error = await response.json().catch(() => ({ error: '服务暂不可用' })); throw new Error(error.error || `请求失败 (${response.status})`); }
-  return response.json();
-}
-function saveFile(text: string, name: string) {
-  const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
-  const anchor = document.createElement('a'); anchor.href = url; anchor.download = name; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
 
 export default function App() {
   const [view, setView] = useState('overview'); const [contextRefs, setContextRefs] = useState<ContextRef[]>([]); const [draft,setDraft] = useState<{title:string;note:string}>(); const [focus,setFocus] = useState<ContextRef>();

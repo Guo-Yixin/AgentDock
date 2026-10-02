@@ -4,7 +4,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setImmediate as yieldThread } from 'node:timers/promises';
 import { consumeExtra, zstdFrames, decodeFrame } from './adapters.mjs';
-import { consumeClaude, consumeCodex, cursorTask, emptyTask, epoch, finalize, PARSER_VERSION } from './parsers.mjs';
+import { consumeClaude, consumeCodex, cursorTask, emptyTask, epoch, finalize, cleanText, PARSER_VERSION } from './parsers.mjs';
 
 export async function* walk(root, extension) {
   let entries; try { entries = await readdir(root, { withFileTypes: true }); } catch { return; }
@@ -14,6 +14,7 @@ export async function* walk(root, extension) {
     else if (entry.isFile() && entry.name.endsWith(extension)) yield file;
   }
 }
+export function workbuddyTaskDirectory(root,id){return typeof id==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(id)?path.join(root,'tasks',id):null;}
 export async function readLog(file, provider, previous, meta, onProgress) {
   const stats = await stat(file);
   const reset = !previous || previous.task._parserVersion !== PARSER_VERSION || previous.task._sourceInode !== stats.ino || stats.size < previous.offset || (stats.size === previous.size && stats.mtimeMs !== previous.mtime);
@@ -94,12 +95,12 @@ export class Collector {
     try {
       db = readonly(file);
       for (const row of db.prepare('SELECT id,cwd,title,custom_title,created_at,updated_at FROM sessions WHERE deleted_at IS NULL').all()) {
-        const meta = { nativeId: row.id, cwd: row.cwd || '', title: row.custom_title || row.title || '', createdAt: epoch(row.created_at), updatedAt: epoch(row.updated_at), evidence: { path: file, locator: `sessions.id=${row.id}` } };
+        const meta = { nativeId: row.id, cwd: row.cwd || '', title: cleanText(row.custom_title || row.title || '',180), createdAt: epoch(row.created_at), updatedAt: epoch(row.updated_at), evidence: { path: file, locator: `sessions.id=${row.id}` } };
         this.workbuddyMeta.set(row.id, meta);
         const task = finalize(emptyTask('workbuddy', row.id, file, { ...meta, partial: true, surface: '桌面/CLI' }));
-        if (!await this.store.get(task.id)) await this.store.upsert(task);
+        if (!(this.store.has?await this.store.has(task.id):await this.store.get(task.id))) await this.store.upsert(task);
       }
-    } catch (e) { if(databaseFailure(e))throw e; this.source('workbuddy').message = '元数据暂不可读，继续读取会话日志'; }
+    } catch (e) { if(databaseFailure(e))throw e;(this.metadataErrors||={}).workbuddy=true; this.source('workbuddy').message = '元数据暂不可读，继续读取会话日志'; }
     finally { db?.close(); }
   }
   async codexIndex() {
@@ -111,15 +112,15 @@ export class Collector {
       const file = path.join(this.config.codex, candidates[0]); db = readonly(file);
       const rows = db.prepare('SELECT * FROM threads ORDER BY updated_at DESC').all();
       for (const row of rows) {
-        const meta = { nativeId: row.id, title: row.name || row.title || '', cwd: row.cwd || '', createdAt: epoch(row.created_at_ms || row.created_at), updatedAt: epoch(row.updated_at_ms || row.updated_at), archived: Boolean(row.archived), evidence: { path: file, locator: `threads.id=${row.id}` }, surface: /desktop|daybreak/i.test(row.originator || '') ? '桌面' : /cli/i.test(row.source || '') ? 'CLI' : /vscode/i.test(row.source || '') ? '编辑器' : '桌面/服务' };
+        const meta = { nativeId: row.id, title: cleanText(row.name || row.title || '',180), cwd: row.cwd || '', createdAt: epoch(row.created_at_ms || row.created_at), updatedAt: epoch(row.updated_at_ms || row.updated_at), archived: Boolean(row.archived), evidence: { path: file, locator: `threads.id=${row.id}` }, surface: /desktop|daybreak/i.test(row.originator || '') ? '桌面' : /cli/i.test(row.source || '') ? 'CLI' : /vscode/i.test(row.source || '') ? '编辑器' : '桌面/服务' };
         if (row.rollout_path) this.codexMeta.set(path.resolve(row.rollout_path), meta);
         const task = finalize(emptyTask('codex', row.id, file, meta));
-        const existing = await this.store.get(task.id);
+        const existing = this.store.has?await this.store.has(task.id):await this.store.get(task.id);
         // Metadata must never overwrite an already parsed transcript or its evidence.
         if (!existing) { task.partial = true; await this.store.upsert(task); }
       }
       source.locations = [file, path.join(this.config.codex, 'sessions'), path.join(this.config.codex, 'archived_sessions')];
-    } catch (e) { if(databaseFailure(e))throw e; source.state = 'partial'; source.message = '索引暂不可读，继续读取日志'; }
+    } catch (e) { if(databaseFailure(e))throw e;(this.metadataErrors||={}).codex=true; source.state = 'partial'; source.message = '索引暂不可读，继续读取日志'; }
     finally { db?.close(); }
   }
   async cursorIndex() {
@@ -160,7 +161,7 @@ export class Collector {
     source.message = errors === files.length ? '数据库暂不可读，将自动重试' : `发现 ${headersCount} 个会话头；${parsedCount} 个可导入，${partialCount} 个缺少完整正文，${drafts} 个空草稿已排除${errors ? `，${errors} 个数据库暂不可读` : ''}。当前适配本机 SQLite 结构；未覆盖的正文不会补写。`;
   }
   async scan() {
-    if (this.busy || this.stopped) { this.dirty = true; return; } this.busy = true; this.dirty = false;
+    if (this.busy || this.stopped) { this.dirty = true; return; } this.busy = true; this.dirty = false;this.metadataErrors={};
     try {
       if (!this.config.disabled?.includes('codex')) await this.codexIndex();
       await this.workbuddyIndex(); const files = [];
@@ -181,13 +182,15 @@ export class Collector {
         const subagent = item.provider === 'claude' && item.file.split(path.sep).includes('subagents');
         const meta = this.codexMeta.get(item.file) || { archived: item.file.includes('archived_sessions'), surface: subagent ? '子代理' : item.provider === 'claude' ? 'CLI' : '未知入口', ...(subagent ? { subagentId: path.basename(item.file, '.jsonl') } : {}) };
         try {
+          const header=await this.store.checkpointHeader?.(item.file);const metaTitle=this.store.scrub?.({title:meta.title}).title||meta.title;
+          if(item.provider!=='workbuddy'&&header&&Number(header.version)===PARSER_VERSION&&Number(header.inode)===item.stats.ino&&Number(header.size)===item.stats.size&&header.mtime===item.stats.mtimeMs&&(!metaTitle||header.title===metaTitle)&&(meta.archived===undefined||(header.archived==='true')===meta.archived)){if(header.partial==='true'||header.unfinished==='true')partial[item.provider]++;this.progress.completed++;await yieldThread();continue;}
           const previous = await this.store.checkpoint(item.file);
           const result = item.file.endsWith('.zstd') ? await readCompressed(item.file, previous, meta) : await readLog(item.file, item.provider, previous, meta);
           if (item.provider === 'workbuddy') {
             const details = this.workbuddyMeta?.get(result.task.nativeId);
-            if (details) { result.task.title = details.title || result.task.title; result.task.cwd = details.cwd || result.task.cwd; }
-            const todos = [];
-            for await (const todoFile of walk(path.join(this.config.workbuddy, 'tasks', result.task.nativeId), '.json')) { try { const todo = JSON.parse(await readFile(todoFile, 'utf8')); todos.push({ text: todo.subject || todo.description || '', status: todo.status || 'pending' }); } catch { result.task.partial = true; } }
+            if (details) { if((details.title&&details.title!==result.task.title)||(details.cwd&&details.cwd!==result.task.cwd)||details.updatedAt>result.task.updatedAt)result.unchanged=false;result.task.title = details.title || result.task.title; result.task.cwd = details.cwd || result.task.cwd;result.task.updatedAt=Math.max(result.task.updatedAt,details.updatedAt); }
+            const todos = [];const todoRoot=workbuddyTaskDirectory(this.config.workbuddy,result.task.nativeId);if(!todoRoot)result.task.partial=true;
+            if(todoRoot)for await (const todoFile of walk(todoRoot, '.json')) { try { const todo = JSON.parse(await readFile(todoFile, 'utf8')); todos.push({ text: todo.subject || todo.description || '', status: todo.status || 'pending' }); } catch { result.task.partial = true; } }
             if (JSON.stringify(todos) !== JSON.stringify(result.task.todos)) { result.task.todos = todos; result.unchanged = false; }
             result.task = finalize(result.task);
           }
@@ -209,9 +212,9 @@ export class Collector {
       for (const id of ['codex', 'claude', 'pi', 'deepseek', 'workbuddy']) {
         const source = this.source(id); const count = files.filter(file => file.provider === id).length;
         if (this.config.disabled?.includes(id)) { source.state = 'missing'; source.message = '用户已停用采集'; continue; }
-        source.state = !count ? 'missing' : errors[id] === count ? 'error' : errors[id] || partial[id] ? 'partial' : 'ready';
+        source.state = !count ? 'missing' : errors[id] === count ? 'error' : errors[id] || partial[id] || this.metadataErrors[id] ? 'partial' : 'ready';
         source.message = !count ? '未找到可扫描的会话日志；已保留现有索引' : `已检查 ${count} 份日志${errors[id] ? `，${errors[id]} 份暂不可读` : ''}${partial[id] ? `，${partial[id]} 份记录不完整` : ''}。回复结束与整体完成分别记录；原始文件只读。`;
-        source.syncAt = Date.now();
+        if(this.metadataErrors[id])source.message+=' 会话索引元数据暂不可读，将继续重试。';source.syncAt = Date.now();
       }
       if (!this.config.disabled?.includes('cursor')) await this.cursorIndex();
     } finally { this.progress.active = false; this.busy = false; this.notify({dates:[...this.changedDates]});this.changedDates.clear(); }

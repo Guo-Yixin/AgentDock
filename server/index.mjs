@@ -1,3 +1,4 @@
+import {randomUUID} from 'node:crypto';
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import {Worker} from 'node:worker_threads';
@@ -11,7 +12,7 @@ import {ModelClient,sealPreview,redact} from './model.mjs';
 const root=path.resolve(fileURLToPath(new URL('..',import.meta.url))),port=Number(process.env.AGENTDOCK_PORT||4317);
 let mysql=null,issue='';try{mysql=mysqlConfig();}catch(e){issue=e.message;}
 const worker=new Worker(new URL('./worker.mjs',import.meta.url),{workerData:{home:process.env.AGENTDOCK_HOME||homedir(),dataDir,mysql,issue,sources:discoverSources()}});
-const pending=new Map(),streams=new Set();let sequence=0,workerError;
+const pending=new Map(),streams=new Set(),activeChats=new Set();let sequence=0,workerError;
 const ready=new Promise(resolve=>worker.on('message',m=>{if(m.event==='ready')resolve();if(m.event==='update')notify();if(m.id){const p=pending.get(m.id);if(!p)return;clearTimeout(p.timer);pending.delete(m.id);m.error?p.reject(new Error(m.error)):p.resolve(m.result);}}));
 worker.on('error',e=>{workerError=e;for(const p of pending.values()){clearTimeout(p.timer);p.reject(new Error('后台服务异常'));}pending.clear();});
 function notify(){for(const s of streams)if(!s.destroyed)s.write(`event: update\ndata: ${Date.now()}\n\n`);}
@@ -68,13 +69,13 @@ app.delete('/api/assistant/chats/:id',async req=>rpc('chatDelete',req.params.id)
 app.post('/api/assistant/generate',{schema:body({previewId:str(128),fingerprint:str(64),question:str(8000),chatId:str(128),reportId:str(128)},['previewId','fingerprint','question'])},async(req,reply)=>{
  const preview=await rpc('preview',req.body.previewId);if(!preview||preview.expiresAt<Date.now()||preview.fingerprint!==req.body.fingerprint)throw new Error('预览已过期或发生变化，请重新预览');
  if(!req.body.question.trim())throw new Error('请输入问题');const client=modelClient();if(!client.key)throw new Error('请先配置 DeepSeek API Key');
- let chat=req.body.chatId?await rpc('chatGet',req.body.chatId):null;if(req.body.chatId&&!chat)throw new Error('聊天不存在');chat||={title:req.body.question.slice(0,60),messages:[]};
+ let chat=req.body.chatId?await rpc('chatGet',req.body.chatId):null;if(req.body.chatId&&!chat)throw new Error('聊天不存在');chat||={id:randomUUID(),title:redact(req.body.question,client.secrets).slice(0,60),messages:[]};if(activeChats.has(chat.id))throw new Error('该聊天正在生成，请先停止或等待完成');
  if(req.body.reportId&&!preview.sources.some(s=>s.type==='report'&&s.id===req.body.reportId))throw new Error('报告必须包含在预览中');
- const history=chat.messages;const question=redact(req.body.question,client.secrets);chat.messages=[...history,{role:'user',text:question,preview,createdAt:Date.now()}];chat=await rpc('chatPut',chat);
+ const history=chat.messages;const question=redact(req.body.question,client.secrets);chat.messages=[...history,{role:'user',text:question,preview,createdAt:Date.now()}];activeChats.add(chat.id);try{chat=await rpc('chatPut',chat);}catch(e){activeChats.delete(chat.id);throw e;}
  reply.hijack();const stream=reply.raw;stream.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache',Connection:'keep-alive'});
  const send=(event,data)=>{if(!stream.destroyed)stream.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);};send('chat',{id:chat.id});const controller=new AbortController();stream.on('close',()=>controller.abort());let text='';const heartbeat=setInterval(()=>{if(!stream.destroyed)stream.write(': heartbeat\n\n');},10000);
  try{const result=await client.generate({question,preview,history,signal:controller.signal,onDelta:delta=>{text+=delta;send('delta',{text:delta});}});chat.messages.push({role:'assistant',...result,sources:preview.sources,createdAt:Date.now(),status:'complete'});await rpc('chatPut',chat);if(req.body.reportId){if(!preview.sources.some(s=>s.type==='report'&&s.id===req.body.reportId))throw new Error('报告必须包含在预览中');await rpc('reportAI',{id:req.body.reportId,...result});}send('done',result);}
- catch(e){const error=controller.signal.aborted?'已停止生成':redact(e.message,client.secrets);chat.messages.push({role:'assistant',text,sources:preview.sources,status:'interrupted',error,createdAt:Date.now()});await rpc('chatPut',chat).catch(()=>{});send('error',{error});}finally{clearInterval(heartbeat);stream.end();}
+ catch(e){const error=controller.signal.aborted?'已停止生成':redact(e.message,client.secrets);chat.messages.push({role:'assistant',text,sources:preview.sources,status:'interrupted',error,createdAt:Date.now()});await rpc('chatPut',chat).catch(()=>{});send('error',{error});}finally{activeChats.delete(chat.id);clearInterval(heartbeat);stream.end();}
 });
 app.get('/api/events',async(req,reply)=>{reply.hijack();const stream=reply.raw;stream.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache',Connection:'keep-alive'});stream.write('retry: 3000\nevent: update\ndata: connected\n\n');streams.add(stream);const timer=setInterval(()=>{if(!stream.destroyed)stream.write(': heartbeat\n\n');},15000);stream.on('close',()=>{clearInterval(timer);streams.delete(stream);});});
 const client=path.join(root,'dist','client');if(existsSync(client)){await app.register(fastifyStatic,{root:client});app.setNotFoundHandler((req,reply)=>req.url.startsWith('/api/')?reply.code(404).send({error:'未知接口'}):reply.sendFile('index.html'));}else app.get('/',(_,reply)=>reply.type('text/plain').send('请先运行 npm run build，或打开开发服务器。'));
