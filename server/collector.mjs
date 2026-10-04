@@ -128,6 +128,9 @@ export class Collector {
     const globalFile = path.join(root, 'globalStorage', 'state.vscdb'); if (existsSync(globalFile)) files.push(globalFile);
     for await (const file of walk(path.join(root, 'workspaceStorage'), '.vscdb')) files.push(file);
     if (!files.length) { source.state = 'missing'; source.message = '指定目录中未找到 Cursor 会话数据库'; source.syncAt = Date.now(); return; }
+    const fingerprints=[];for(const file of files)for(const candidate of [file,file+'-wal']){try{const r=await stat(candidate);fingerprints.push([candidate,r.size,r.mtimeMs,r.ino]);}catch{fingerprints.push([candidate,null]);}}
+    const fingerprint=JSON.stringify(fingerprints),now=Date.now();if(this.cursorFingerprint===fingerprint&&now-(this.cursorCheckedAt||0)<60000){source.syncAt=now;return;}this.cursorFingerprint=fingerprint;this.cursorCheckedAt=now;
+    const discovered=new Map();
     let parsedCount = 0, headersCount = 0, partialCount = 0, drafts = 0, errors = 0;
     for (const file of files) {
       let db;
@@ -166,7 +169,7 @@ export class Collector {
         for (const header of headers) {
           const body = bodies.get(header.composerId); const task = cursorTask(header, body, file);
           if (!task) { drafts++; continue; }
-          if (task.partial) partialCount++;
+          discovered.set(task.nativeId,(discovered.get(task.nativeId)??true)&&task.partial);if (task.partial) partialCount++;
           const existing = this.store.get ? await this.store.get(task.id) : null;
           if (task.partial && existing && !existing.partial) { parsedCount++; continue; }
           if(await this.store.upsert(finalize(task)))for(const e of task._newEvents||[])this.changedDates.add(new Date(e.timestamp+28800000).toISOString().slice(0,10));parsedCount++;
@@ -175,7 +178,7 @@ export class Collector {
       finally { db?.close(); }
       await yieldThread();
     }
-    source.locations = files; source.syncAt = Date.now();
+    source.discoveredCount=discovered.size;parsedCount=discovered.size;partialCount=[...discovered.values()].filter(Boolean).length;if(errors)this.cursorFingerprint=null;source.locations = files; source.syncAt = Date.now();
     source.state = errors === files.length ? 'error' : partialCount || errors || !parsedCount ? 'partial' : 'ready';
     source.message = errors === files.length ? '数据库暂不可读，将自动重试' : `发现 ${headersCount} 个会话头；${parsedCount} 个可导入，${partialCount} 个缺少完整正文，${drafts} 个空草稿已排除${errors ? `，${errors} 个数据库暂不可读` : ''}。当前适配本机 SQLite 结构；未覆盖的正文不会补写。`;
   }

@@ -143,7 +143,7 @@ export function cursorTask(header, body, file) {
   setTodos(task, body?.todos);
   if (!entries.length || body?.fullConversationHeadersOnly?.some(h=>!entries.some(e=>(e.bubbleId||e.id)===h.bubbleId))) task.partial = true;
   task.title ||= 'Cursor 会话（标题不可读）';
-  if (header.hasBlockingPendingActions) task.activity = 'unknown';
+  if (header.hasBlockingPendingActions) { task.activity = 'unknown'; task.requiresAction=true; }
   return task;
 }
 export function finalize(task) {

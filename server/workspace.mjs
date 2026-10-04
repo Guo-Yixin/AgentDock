@@ -1,3 +1,4 @@
+import {goalGet} from './goals.mjs';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
@@ -24,7 +25,9 @@ export async function generateReport(store, { kind = 'daily', date, project = ''
     const activity = events.filter(e => e.taskId === taskId); const last = [...activity].reverse().find(e => e.kind === 'assistant');
     items.push({ taskId, title: task.title, projectName: task.projectName, provider: task.provider, summary: last?.text || activity.find(e => e.kind === 'user')?.text || '本期用户确认完成', evidence: last?.evidence || activity[0]?.evidence || task.evidence, confirmed: completed.some(r => r.task_id === taskId), reported: task.completion === 'reported_complete' && task.updatedAt >= range.start && task.updatedAt < range.end, blocked: task.completion === 'blocked', todos: task.todos, activityCount: activity.length });
   }
-  const facts = { items, activityCount: events.length, confirmed: items.filter(i => i.confirmed).length, reported: items.filter(i => i.reported).length, blocked: items.filter(i => i.blocked).length };
+  const goalRows=await store.rows("SELECT DISTINCT g.id FROM ad_goals g LEFT JOIN ad_goal_sessions l ON l.goal_id=g.id LEFT JOIN ad_events e ON e.task_id=l.task_id WHERE (e.timestamp>=? AND e.timestamp<? OR g.confirmed_at>=? AND g.confirmed_at<?)"+(project?' AND g.project_id=?':''),[range.start,range.end,range.start,range.end,...(project?[project]:[])]);
+  const goalItems=[];for(const r of goalRows){const g=await goalGet(store,r.id);if(provider&&!g.sessions.some(t=>t.provider===provider&&ids.has(t.id)))continue;goalItems.push({id:g.id,title:g.title,status:g.status,confirmed:Boolean(g.confirmedAt&&g.confirmedAt>=range.start&&g.confirmedAt<range.end)});}
+  const facts = { goalItems, goalsConfirmed:goalItems.filter(g=>g.confirmed).length, items, activityCount: events.length, confirmed: items.filter(i => i.confirmed).length, reported: items.filter(i => i.reported).length, blocked: items.filter(i => i.blocked).length };
   const factsDigest = digest(JSON.stringify(facts));
   return store.transaction(async tx => {
     const existing = await tx.document(id, 'report');
@@ -33,7 +36,7 @@ export async function generateReport(store, { kind = 'daily', date, project = ''
   });
 }
 export function reportMarkdown(report) {
-  return `# ${report.title}\n\n时区：Asia/Shanghai\n\n${report.facts.activityCount} 条本期活动 · ${report.facts.confirmed} 项用户确认完成 · ${report.facts.reported} 项来源报告完成\n\n## 进展与依据\n\n${report.facts.items.map(i => `### ${i.title}\n\n${i.summary}\n\n来源：${i.provider} / ${i.projectName} · ${i.evidence.path}:${i.evidence.line || ''}${i.evidence.locator ? ' · ' + i.evidence.locator : ''}\n\n状态：${i.confirmed ? '用户确认完成' : i.reported ? '来源报告完成，待验证' : '未确认完成'}\n\n当前待办快照：\n${i.todos.map(t => `- [${t.status === 'completed' ? 'x' : ' '}] ${t.text}`).join('\n') || '无结构化待办'}\n`).join('\n') || '本期无可解析活动。'}\n\n## 我的补充\n\n${report.userText || '无'}\n\n${report.versions.map(v => `## AI 分析 · ${v.model}\n\n${v.text}\n\n生成时间：${new Date(v.createdAt).toISOString()}`).join('\n\n')}`;
+  return `# ${report.title}\n\n时区：Asia/Shanghai\n\n${report.facts.goalsConfirmed||0} 个工作目标本期确认完成 · ${report.facts.activityCount} 条本期活动 · ${report.facts.confirmed} 项用户确认完成 · ${report.facts.reported} 项来源报告完成\n\n## 进展与依据\n\n${report.facts.items.map(i => `### ${i.title}\n\n${i.summary}\n\n来源：${i.provider} / ${i.projectName} · ${i.evidence.path}:${i.evidence.line || ''}${i.evidence.locator ? ' · ' + i.evidence.locator : ''}\n\n状态：${i.confirmed ? '用户确认完成' : i.reported ? '来源报告完成，待验证' : '未确认完成'}\n\n当前待办快照：\n${i.todos.map(t => `- [${t.status === 'completed' ? 'x' : ' '}] ${t.text}`).join('\n') || '无结构化待办'}\n`).join('\n') || '本期无可解析活动。'}\n\n## 我的补充\n\n${report.userText || '无'}\n\n${report.versions.map(v => `## AI 分析 · ${v.model}\n\n${v.text}\n\n生成时间：${new Date(v.createdAt).toISOString()}`).join('\n\n')}`;
 }
 export async function refreshReports(store, history = false) {
   const dateFor = timestamp => new Date(timestamp + 28800000).toISOString().slice(0, 10);
@@ -67,9 +70,10 @@ export async function buildContext(store, refs, range = {}) {
   if(range.start!==undefined&&range.end!==undefined&&range.end<=range.start)throw new Error('上下文日期范围无效');
   const sources = [], parts = [];
   for (const ref of refs) {
-    if (!['task', 'project', 'report', 'schedule'].includes(ref.type) || typeof ref.id !== 'string') throw new Error('上下文对象无效');
+    if (!['task', 'project', 'report', 'schedule','goal'].includes(ref.type) || typeof ref.id !== 'string') throw new Error('上下文对象无效');
     let text = '', title = '', evidence = null;
-    if (ref.type === 'task') {
+    if(ref.type==='goal'){const goal=await goalGet(store,ref.id);if(!goal)throw new Error('目标不存在');title=goal.title;text=JSON.stringify({title,status:goal.status,description:goal.description,note:goal.note,sessions:goal.sessions.map(t=>({id:t.id,title:t.title,summary:t.annotation.summaryOverride||t.summary,todos:t.todos,note:t.annotation.note,evidence:t.summaryEvidence||t.evidence}))});}
+    else if (ref.type === 'task') {
       const t = await store.get(ref.id); if (!t) throw new Error('所选会话不存在');
       const branch = ref.branchId ? t.branches?.find(b => b.id === ref.branchId) : t.branches?.find(b => b.id === t.annotation.branchId);
       if(ref.branchId&&!branch)throw new Error('所选分支不存在');title = t.title; evidence = branch?.summaryEvidence||t.summaryEvidence||t.evidence;

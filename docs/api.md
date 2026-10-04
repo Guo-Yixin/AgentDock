@@ -35,10 +35,27 @@
 
 任务列表参数：`q` 字面检索、`provider`、`project`、`status`、`page`（从 1 开始，每页 30）、`recent=true`。列表筛选、分页与日期活动查询在 MySQL 执行。
 
-上下文请求示例：`{refs:[{type:"task",id:"会话ID",includeTranscript:false}],range:{start:毫秒,end:毫秒}}`。type 可为 task/project/report/schedule；最多 40 项、48000 字符。返回 id、fingerprint、text、sources、长度估计、15 分钟有效期。生成请求 `{previewId,fingerprint,question,chatId?}`；中断浏览器 fetch 即停止上游生成，不自动重试。
+上下文请求示例：`{refs:[{type:"task",id:"会话ID",includeTranscript:false}],range:{start:毫秒,end:毫秒}}`。type 可为 task/project/report/schedule/goal；最多 40 项、48000 字符。返回 id、fingerprint、text、sources、长度估计、15 分钟有效期。生成请求 `{previewId,fingerprint,question,chatId?}`；中断浏览器 fetch 即停止上游生成，不自动重试。
 
 日程字段：`id?`、`title`、`note`、`start`、`end`、`allDay`、`projectId`、`taskId`、`done`、`reminderMinutes`（0/5/15/30/60/1440）。时间均为毫秒，展示时区 Asia/Shanghai。
 
 用户标记：note、summaryOverride（null 跟随来源）、manualStatus（null 跟随来源）、goalGroup、pinned、branchId。manualStatus 只能用户确认 done，来源待办仅产生 reported_complete；修改备注不改变旧 confirmedAt。
 
 错误 `{error}`；无对象通常 404、格式或配置错误 400、不可信 Host/Origin 403。助手上下文不能传任意文件路径，服务不提供任务执行接口。公开配置中只有 hasPassword / hasKey 标记；Key 仅用于后端认证头。
+
+
+## 0.3 工作目标与桌面
+
+- `GET/POST /api/goals`：目标分页、创建；支持 project/status/q/attention/page。
+- `GET/PATCH/DELETE /api/goals/:id`：详情、修改、删除目标（会话保留）。
+- `POST /api/goals/:id/sessions` 与 `DELETE /api/goals/:id/sessions/:taskId`：手动关联同项目会话。
+- `GET /api/goals/:id/candidates`：同项目近 30 天候选；`GET /api/tasks/:id/goals`：已关联目标 ID。
+- `GET /api/tasks/:id/events`、`GET /api/goals/:id/events`：按时间与 ID 排序，返回 events/nextCursor，cursor 不透明。
+- `POST /api/sources/:id/validate`：检查实际记录与结构；`GET /api/diagnostics`：无正文、路径和凭据的状态诊断。
+- `POST /api/collection/pause {paused}`：暂停或恢复；`POST /api/reports/refresh`：手动重试本地报告。
+- `POST /api/reminders/:id/claim {owner}`：领取 90 秒提醒租约；`POST /api/reminders/:id/ack {claim?}`：确认通知，或用户手动处理。
+- SSE `update` 数据包含 type、ids 与 revision。事件提示失联后刷新，客户端不视其为数据库快照。
+
+桌面 API 和静态页面必须带本次启动的 `X-AgentDock-Session`。令牌仅在主进程与独立后端间保存，由主进程注入本应用请求，不放入 URL、前端上下文或日志。普通网页启动保留原本的本机来源检查。
+
+目标 title/projectId/description/note/status/needsReview 单独持久化；status 为 not_started/in_progress/blocked/done/archived，done 设置用户确认时间。会话标记新增 needsReview；回复结束不改变目标状态。

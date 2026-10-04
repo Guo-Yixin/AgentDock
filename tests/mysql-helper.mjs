@@ -7,6 +7,6 @@ export async function testStore(name) {
   const connection = await mysql.createConnection({ ...connectionOptions(config), database: undefined });
   try { await connection.query(`CREATE DATABASE IF NOT EXISTS \`${name}\` CHARACTER SET utf8mb4`); } finally { await connection.end(); }
   const store = await openStore({ ...config, database: name }, true);
-  for (const table of ['ad_tasks','ad_events','ad_checkpoints','ad_annotations','ad_documents']) await store.rows('DELETE FROM ' + table);
+  for (const table of ['ad_goal_sessions','ad_goals','ad_tasks','ad_events','ad_checkpoints','ad_annotations','ad_documents']) await store.rows('DELETE FROM ' + table);
   return { store, config: { ...config, database: name } };
 }

@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-if (existsSync('.env')) process.loadEnvFile('.env');
+if (process.env.AGENTDOCK_DESKTOP!=='1' && existsSync('.env')) process.loadEnvFile('.env');
 export const dataDir = path.resolve(process.env.AGENTDOCK_DATA || 'data');
 const file = path.join(dataDir, 'settings.local.json');
 export function loadSettings() { try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return { sources: {}, model: 'deepseek-flash' }; } }
@@ -47,7 +47,8 @@ export function discoverSources(settings = loadSettings()) {
     const saved = settings.sources?.[id]; const tool = env && process.env[env];
     const resolved = path.resolve(override || saved?.root || tool || fallback); const root = existsSync(resolved) ? realpathSync.native(resolved) : resolved;
     const command = id === 'deepseek' ? 'dsh' : id === 'workbuddy' ? 'workbuddy' : id;
-    const executable = (process.env.PATH || '').split(path.delimiter).flatMap(dir => ['', '.exe', '.cmd', '.ps1'].map(ext => path.join(dir, command + ext))).find(existsSync) || '';
+    const cursorInstall=id==='cursor'&&!process.env.AGENTDOCK_HOME?[path.join(process.env.ProgramFiles||'C:\Program Files','Cursor','Cursor.exe'),path.join(home,'AppData','Local','Programs','cursor','Cursor.exe')].find(existsSync):'';
+    const executable = cursorInstall || (process.env.PATH || '').split(path.delimiter).flatMap(dir => ['', '.exe', '.cmd', '.ps1'].map(ext => path.join(dir, command + ext))).find(existsSync) || '';
     return { id, name, root, exists: existsSync(root), executable, enabled: saved?.enabled !== false, discoveredBy: override ? 'AgentDock 环境变量' : saved?.root ? '用户配置' : tool ? env : '当前用户默认目录' };
   });
 }

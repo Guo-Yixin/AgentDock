@@ -11,6 +11,14 @@ import { readLog, Collector } from '../server/collector.mjs';
 mkdirSync('artifacts/unit', { recursive: true });
 const temp = () => mkdtempSync(path.resolve('artifacts/unit/case-'));
 const now = new Date().toISOString();
+
+test('Cursor: 未变化索引跳过，WAL 追加立即读取，60 秒兜底复查',async()=>{
+ const dir=temp(),root=path.join(dir,'Cursor'),global=path.join(root,'globalStorage');mkdirSync(global,{recursive:true});
+ const db=new DatabaseSync(path.join(global,'state.vscdb'));db.exec('PRAGMA journal_mode=WAL;CREATE TABLE composerHeaders(composerId TEXT,value TEXT);CREATE TABLE cursorDiskKV(key TEXT,value TEXT)');
+ db.prepare('INSERT INTO composerHeaders VALUES(?,?)').run('cache-id',JSON.stringify({composerId:'cache-id',name:'缓存验证',createdAt:Date.now()}));
+ let writes=0;const collector=new Collector({upsert:async()=>{writes++;return true;}},{home:dir,codex:dir,claude:dir,cursor:root},()=>{});
+ try{await collector.cursorIndex();assert.equal(writes,1);await collector.cursorIndex();assert.equal(writes,1);db.prepare('INSERT INTO cursorDiskKV VALUES(?,?)').run('composerData:cache-id',JSON.stringify({composerId:'cache-id',conversation:[{type:1,text:'追加验证'}]}));await collector.cursorIndex();assert.equal(writes,2);collector.cursorCheckedAt=Date.now()-61000;await collector.cursorIndex();assert.equal(writes,3);assert.equal(collector.source('cursor').discoveredCount,1);}finally{await collector.stop();db.close();}
+});
 const evidence = { path: 'redacted.jsonl', line: 3 };
 const meta = { type: 'session_meta', timestamp: now, payload: { id: 'sample-codex', cwd: '', source: 'cli' } };
 const records = [meta, { type: 'response_item', timestamp: now, payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '实现本地任务列表' }] } }, { type: 'response_item', timestamp: now, payload: { type: 'message', role: 'assistant', channel: 'final', content: [{ type: 'output_text', text: '已实现列表，待你验证。' }] } }, { type: 'event_msg', timestamp: now, payload: { type: 'task_complete' } }];
