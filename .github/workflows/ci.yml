@@ -95,3 +95,45 @@ jobs:
             artifacts/screenshots/
           if-no-files-found: ignore
           retention-days: 7
+
+  desktop:
+    name: Windows 桌面安装包
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - name: 获取代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: 配置 Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: 安装依赖及 Electron
+        run: |
+          npm ci
+          node node_modules/electron/install.js
+      - name: 构建当前用户安装包
+        run: npm run desktop:build
+      - name: 验证独立运行时及桌面沙箱
+        shell: pwsh
+        run: |
+          $env:AGENTDOCK_DESKTOP_EXE = (Resolve-Path 'release/win-unpacked/AgentDock.exe').Path
+          npm run test:desktop
+      - name: 保存未签名测试安装包
+        uses: actions/upload-artifact@v7
+        with:
+          name: AgentDock-windows-x64
+          path: release/AgentDock-*-windows-x64.exe
+          retention-days: 14
+      - name: 保存桌面测试截图
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-screenshots
+          path: artifacts/screenshots/desktop-smoke.png
+          if-no-files-found: ignore
+          retention-days: 7

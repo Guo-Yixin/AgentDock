@@ -1,0 +1,11 @@
+import {mkdir,copyFile,cp,readFile,writeFile} from 'node:fs/promises';
+import {execFileSync} from 'node:child_process';
+import path from 'node:path';
+const pkg=JSON.parse(await readFile('package.json','utf8'));
+const app=path.resolve('artifacts/desktop-app'),backend=path.resolve('artifacts/desktop-backend');
+await mkdir(app,{recursive:true});await mkdir(backend,{recursive:true});
+for(const file of ['main.cjs','preload.cjs','icon.png'])await copyFile('desktop/'+file,path.join(app,file));
+await writeFile(path.join(app,'package.json'),JSON.stringify({name:pkg.name,version:pkg.version,main:'main.cjs',description:'本地 AI 编程任务指挥台',author:'Guo-Yixin'}));
+for(const file of ['package.json','package-lock.json'])await copyFile(file,path.join(backend,file));
+execFileSync(process.execPath,[process.env.npm_execpath,'ci','--omit=dev','--ignore-scripts','--no-audit','--no-fund'],{cwd:backend,stdio:'inherit',windowsHide:true});
+await cp('server',path.join(backend,'server'),{recursive:true});await cp('dist/client',path.join(backend,'dist/client'),{recursive:true});

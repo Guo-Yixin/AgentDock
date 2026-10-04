@@ -1,4 +1,4 @@
-interface DesktopPreferences {autoStart:boolean;notifications:boolean}
+interface DesktopPreferences {autoStart:boolean;notifications:boolean;theme?:'system'|'light'|'dark';onboardingDone?:boolean}
 interface Window {agentdock?:{
  preferences():Promise<DesktopPreferences>;
  setPreferences(p:Partial<DesktopPreferences>):Promise<DesktopPreferences>;

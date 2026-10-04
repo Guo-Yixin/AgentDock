@@ -13,7 +13,7 @@ export interface Task {
 }
 export interface Project { id: string; name: string; root: string; count: number; updatedAt: number; providers: Provider[] }
 export interface Source {
-  id: Provider; name: string; state: 'ready' | 'scanning' | 'partial' | 'missing' | 'planned' | 'error';
+  id: Provider; name: string; state: 'ready' | 'scanning' | 'partial' | 'missing' | 'planned' | 'error' | 'paused';
   count: number; syncAt: number | null; message: string; locations: string[];
 }
 export interface Overview {

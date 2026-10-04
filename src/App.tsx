@@ -14,7 +14,7 @@ const Goals=lazy(()=>import('./Goals'));
 const names: Record<Provider, string> = { codex: 'Codex', claude: 'Claude Code', cursor: 'Cursor', pi: 'Pi CLI', deepseek: 'DeepSeek', workbuddy: 'WorkBuddy' };
 const statusNames: Record<Completion, string> = { unconfirmed: '待确认', in_progress: '进行中', blocked: '需你处理', done: '已确认完成', reported_complete: '已报告完成' };
 const activityNames = { recent: '近期有活动', responded: '本轮回复已结束', interrupted: '本轮已中断', unknown: '活动状态未知' };
-const sourceNames: Record<Source['state'], string> = { ready: '已接入', scanning: '导入中', partial: '部分接入', missing: '未找到记录', planned: '计划接入', error: '采集异常' };
+const sourceNames: Record<Source['state'], string> = { ready: '已接入', scanning: '导入中', partial: '部分接入', missing: '未找到记录', planned: '计划接入', error: '采集异常', paused:'已暂停' };
 const dateFormatter = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: 'long', day: 'numeric', weekday: 'long' });
 function time(value: number) {
   const delta = Math.max(0, Date.now() - value);

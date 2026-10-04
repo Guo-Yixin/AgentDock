@@ -10,6 +10,31 @@
 
 界面提供浅色、深色和跟随系统主题，工作目标可在独立页面管理，并加入助手上下文。首页汇总需处理目标、会话及近期日程，首次配置提供引导。完整活动分页、目标与会话详情、筛选状态支持 URL 恢复；未保存的目标、备注、报告或日程修改会提示确认。报告、日历、设置和助手按需加载。今日摘要导出基于当天报告事实，而非全部历史。
 
+## Windows 桌面测试版
+
+安装包 `AgentDock-0.3.0-windows-x64.exe` 由 [GitHub 自动检查](https://github.com/Guo-Yixin/AgentDock/actions/workflows/ci.yml) 构建，进入成功运行的 Artifacts 下载 `AgentDock-windows-x64`（需登录 GitHub，保留 14 天）。公开正式版本在 [Releases](https://github.com/Guo-Yixin/AgentDock/releases)；没有更新时不会自动下载或安装。
+
+- 当前用户安装，无需管理员权限。捆绑 SHA-256 校验的官方 Node.js 24.21.0，无需另装 Node.js；**仍需自行准备并配置 MySQL**。
+- 关闭窗口隐藏到托盘；托盘可打开窗口、暂停/恢复采集或退出。退出仅停止本应用启动的后端。服务异常会尝试恢复，也可手动重试。
+- 自动登录启动与桌面通知默认关闭，可在设置中开启。日程提醒要求桌面应用运行；通知与浏览器通过数据库租约协调，领取后未成功处理的提醒会在租约过期后恢复。
+- 配置保存在 `%APPDATA%\AgentDock`，密码和 Key 使用当前 Windows 用户 DPAPI 加密。首次使用必须填写自己的配置；未连接数据库时仍可进入演示和设置。
+- 从设置选择旧 `settings.local.json` 可显式导入同一用户的加密配置，已有配置不覆盖，原文件保留。若旁边有旧 AgentDock SQLite 索引，可确认复制后在数据库设置中手动迁移。IDE 原始 SQLite 数据库不导入为应用配置。
+- 安装包未签名，Windows 可能显示未知发布者提示。升级和卸载保留用户配置与 MySQL 数据；卸载前请从托盘退出。此版不提供自动更新，也不捆绑数据库。
+
+开发者构建与验收（Windows x64）：
+
+```powershell
+npm.cmd ci
+node node_modules/electron/install.js
+npm.cmd run desktop:build
+npm.cmd run test:desktop
+# 打包后启动测试，使用独立合成配置，不连接真实数据库或 IDE
+$env:AGENTDOCK_DESKTOP_EXE = (Resolve-Path release/win-unpacked/AgentDock.exe).Path
+npm.cmd run test:desktop
+```
+
+桌面渲染器启用沙箱、上下文隔离并关闭 Node 集成；窄接口只提供文件选择、桌面偏好及版本检查。独立后端使用随机本机端口和每次启动的会话认证，令牌不写入 URL、前端、模型或日志。源代码运行的网页保持默认 4317 端口。
+
 ## 启动与首次配置
 
 需要 Node.js 24 或 26，以及已创建的 MySQL 8.0 / 8.4 数据库。Windows 是主要验证平台。
@@ -117,7 +142,7 @@ npm.cmd run test:e2e
 
 单元测试无需 MySQL。集成与浏览器测试需要独立测试账号配置（集成权限测试还需要 CREATE USER 与 GRANT 权限，日常应用账号无需这些权限）；测试辅助程序只允许 `agentdock_test*` / `agentdock_e2e*` / `agentdock_ci*` 库名，并清理其中的 AgentDock 测试表，**请勿在这些名称的数据库中存放业务数据**。测试使用独立合成 IDE 日志、模拟 DeepSeek、4318/4319 端口与 `artifacts/e2e` 配置目录，不调用真实模型 API，不修改原工具记录。截图位于 `artifacts/screenshots`。
 
-[GitHub 自动检查](https://github.com/Guo-Yixin/AgentDock/actions/workflows/ci.yml) 在 main 推送、PR 和手动触发时运行：Windows Node.js 24/26 检查解析、DPAPI、类型与构建；Ubuntu Node.js 24/26 使用临时 MySQL 8.4 服务容器验证事务、迁移与 Chromium 界面。CI 只使用合成测试凭据，不连接开发者或用户数据库。浏览器报告、截图与失败跟踪保留 7 天。阻止失败检查的合并需另行设置分支保护。
+[GitHub 自动检查](https://github.com/Guo-Yixin/AgentDock/actions/workflows/ci.yml) 在 main 推送、PR 和手动触发时运行：Windows Node.js 24/26 检查解析、DPAPI、类型与构建；Ubuntu Node.js 24/26 使用临时 MySQL 8.4 服务容器验证事务、迁移与 Chromium 界面。独立 Windows 桌面任务构建 NSIS 安装包，并验证沙箱、认证、托盘隐藏和单实例、故障恢复和后端退出。CI 只使用合成测试凭据，不连接开发者或用户数据库。浏览器报告、截图与失败跟踪保留 7 天。阻止失败检查的合并需另行设置分支保护。
 
 ## 结构与边界
 
@@ -125,6 +150,7 @@ npm.cmd run test:e2e
 - `server`：Fastify API、Worker、只读来源适配器、MySQL 存储、报告与模型分析。
 - `docs/api.md`：接口说明；`docs/design.md`：imagegen 提示词和视觉约定。
 - `docs/concepts` 与 `public/assets`：概念图、深空背景和透明轨道装饰。
+- `desktop`：Electron 主进程、沙箱 preload、Windows 安装配置与校验运行时清单。
 - `AGENTS.md`：AI 提交前检查规则，提交说明使用中文并审查 README。
 
-网页适配 1440px、1920px 和窄窗口，支持减少动态效果。文字、按钮、图表均为真实组件。任务执行控制、桌面打包、外部日历和编辑器扩展仍在后续范围。
+网页适配 1440px、1920px 和窄窗口，支持减少动态效果。文字、按钮、图表均为真实组件。任务执行控制、外部日历和编辑器扩展仍在后续范围。

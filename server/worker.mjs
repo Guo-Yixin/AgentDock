@@ -13,13 +13,13 @@ let paused=false;let reportIssue='';let reportTimer, reporting=false, historyPen
 const collectionFailed=e=>{database.connected=false;database.message=databaseError(e);const active=collector;collector=null;void active?.stop();notify();};
 const notify=(hint={type:'all'})=>parentPort.postMessage({event:'update',...hint});
 const collectionUpdated=hint=>{if(hint?.dates)for(const date of hint.dates)if(Date.parse(date+'T00:00:00+08:00')>=Date.now()-30*86400000)dirtyDates.add(date);notify({type:'collection'});if(!reportTimer)reportTimer=setTimeout(()=>{reportTimer=null;void reportRefresh();},8000);};
-function sourceList(){return config.sources.map(s=>({...s,state:'missing',message:s.enabled?'数据库未连接，采集暂停':'用户已停用采集',locations:[s.root],syncAt:null,count:0}));}
+function sourceList(){return config.sources.map(s=>({...s,state:paused?'paused':'missing',message:s.enabled?(paused?'采集已暂停':database.connected?'等待恢复采集':'数据库未连接，采集暂停'):'用户已停用采集',locations:[s.root],syncAt:null,count:0}));}
 function collectionConfig(){return {...Object.fromEntries(config.sources.map(s=>[s.id,s.root])),home:config.home,disabled:config.sources.filter(s=>!s.enabled).map(s=>s.id)};}
 async function reportRefresh(){if(!store||!database.connected||reporting||switching)return;reporting=true;try{await refreshReports(store,historyPending);if(!collector?.progress.active)historyPending=false;const pending=[...dirtyDates];for(const date of pending){await generateReport(store,{date});await generateReport(store,{date,kind:'weekly'});dirtyDates.delete(date);}reportIssue='';}catch{reportIssue='报告更新失败，可稍后重试';}finally{reporting=false;notify({type:'reports'});}}
 async function connect(mysql,initialize=false){
  switching=true;const previousStore=store;await collector?.stop();collector=null;
- try{const candidate=await openStore(mysql,initialize);store=candidate;await previousStore?.close();config.mysql=mysql;historyPending=true;dirtyDates.clear();database={configured:true,connected:true,message:'MySQL 已连接'};collector=new Collector(store,collectionConfig(),collectionUpdated,collectionFailed);if(!paused)void collector.start().catch(collectionFailed);}
- catch(e){store=previousStore;database={configured:Boolean(config.mysql),connected:false,message:e.message};if(store){try{await store.rows('SELECT 1');database.connected=true;database.message='已恢复原数据库连接';collector=new Collector(store,collectionConfig(),collectionUpdated,collectionFailed);if(!paused)void collector.start().catch(collectionFailed);}catch{}}throw e;}
+ try{const candidate=await openStore(mysql,initialize);store=candidate;await previousStore?.close();config.mysql=mysql;historyPending=true;dirtyDates.clear();database={configured:true,connected:true,message:'MySQL 已连接'};collector=paused?null:new Collector(store,collectionConfig(),collectionUpdated,collectionFailed);if(collector)void collector.start().catch(collectionFailed);}
+ catch(e){store=previousStore;database={configured:Boolean(config.mysql),connected:false,message:e.message};if(store){try{await store.rows('SELECT 1');database.connected=true;database.message='已恢复原数据库连接';collector=paused?null:new Collector(store,collectionConfig(),collectionUpdated,collectionFailed);if(collector)void collector.start().catch(collectionFailed);}catch{}}throw e;}
  finally{switching=false;notify();}
 }
 const handlers={
@@ -31,7 +31,7 @@ const handlers={
  goals:args=>goalList(store,args),goalGet:id=>goalGet(store,id),goalPut:args=>goalPut(store,args),goalLink:args=>goalLink(store,args),goalDelete:id=>goalDelete(store,id),goalCandidates:id=>goalCandidates(store,id),timeline:args=>store.timeline(args),taskGoals:id=>store.rows('SELECT goal_id id FROM ad_goal_sessions WHERE task_id=?',[id]),
  get:id=>store.get(id),patch:({id,patch})=>store.patch(id,patch),export:id=>store.export(id),
  configure:args=>connect(args.mysql,args.initialize),
- sources:async args=>{const previous=config.sources;await collector?.stop();config.sources=args;try{collector=store?new Collector(store,collectionConfig(),collectionUpdated,collectionFailed):null;if(collector)if(!paused)void collector.start().catch(collectionFailed);}catch(e){config.sources=previous;throw e;}return true;},
+ sources:async args=>{const previous=config.sources;await collector?.stop();config.sources=args;try{collector=store&&!paused?new Collector(store,collectionConfig(),collectionUpdated,collectionFailed):null;if(collector)if(!paused)void collector.start().catch(collectionFailed);}catch(e){config.sources=previous;throw e;}return true;},
  scan:async()=>{if(!paused&&collector)void collector.scan().catch(collectionFailed);return true;},
  reports:()=>store.documents('report'), reportGenerate:args=>generateReport(store,args),
  reportGet:id=>store.document(id,'report'), reportExport:async id=>{const r=await store.document(id,'report');if(!r)throw new Error('报告不存在');return reportMarkdown(r);},
@@ -43,7 +43,7 @@ const handlers={
  reminders:async()=>{const now=Date.now();return(await store.documents('schedule')).filter(s=>!s.done&&!s.notifiedAt&&s.start-s.reminderMinutes*60000<=now&&s.end>now);},
  reminderClaim:args=>claimReminder(store,args),reminderAck:args=>acknowledgeReminder(store,args),
  events:args=>store.events(args),activityDays:args=>store.activityDays(args),
- migrate:async()=>{await collector?.stop();try{const result=await migrateLegacy(store,path.join(config.dataDir,'agentdock.sqlite'));await migrateGoalGroups(store);return result;}finally{collector=new Collector(store,collectionConfig(),collectionUpdated,collectionFailed);if(!paused)void collector.start().catch(collectionFailed);}},
+ migrate:async()=>{await collector?.stop();try{const result=await migrateLegacy(store,path.join(config.dataDir,'agentdock.sqlite'));await migrateGoalGroups(store);return result;}finally{collector=paused?null:new Collector(store,collectionConfig(),collectionUpdated,collectionFailed);if(collector)void collector.start().catch(collectionFailed);}},
  migration:()=>store.document('legacy-migration','migration'),
  context:async args=>({...await buildContext(store,args.refs,args.range),title:'上下文预览'}),
  preview:id=>store.document(id,'preview'),previewSave:record=>store.putDocument('preview',record),
@@ -58,7 +58,7 @@ const healthTimer=setInterval(async()=>{
  if(switching)return;
  if(store){try{await store.rows('SELECT 1');database.connected=true;}catch(e){database.connected=false;database.message=databaseError(e);await collector?.stop();collector=null;notify();}}
  if(!database.connected&&config.mysql){try{await connect(config.mysql);}catch{}}
- else if(database.connected&&!collector&&!paused){collector=new Collector(store,collectionConfig(),collectionUpdated,collectionFailed);if(!paused)void collector.start().catch(collectionFailed);}
+ else if(database.connected&&!collector&&!paused){collector=paused?null:new Collector(store,collectionConfig(),collectionUpdated,collectionFailed);if(collector)void collector.start().catch(collectionFailed);}
  void reportRefresh();
 },60000);
 if(config.mysql){try{await connect(config.mysql);}catch{}}

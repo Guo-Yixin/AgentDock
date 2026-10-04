@@ -1,0 +1,29 @@
+appId: com.guoyixin.agentdock
+productName: AgentDock
+directories:
+  output: release
+  buildResources: desktop
+  app: artifacts/desktop-app
+files:
+  - '**/*'
+extraResources:
+  - from: desktop/runtime
+    to: runtime
+    filter: [node.exe, LICENSE]
+  - from: artifacts/desktop-backend
+    to: backend
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: desktop/icon.png
+  requestedExecutionLevel: asInvoker
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+  runAfterFinish: false
+  artifactName: AgentDock-${version}-windows-x64.exe
+publish: null
