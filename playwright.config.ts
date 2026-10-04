@@ -1,4 +1,6 @@
 import { defineConfig } from '@playwright/test';
+// Local services must bypass a developer machine's outbound HTTP proxy.
+process.env.NO_PROXY = [process.env.NO_PROXY, '127.0.0.1', 'localhost'].filter(Boolean).join(',');
 export default defineConfig({
   testDir: './tests/browser', fullyParallel: false, workers: 1, timeout: 30000,
   reporter: 'list', outputDir: 'artifacts/browser-results',

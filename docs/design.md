@@ -3,7 +3,7 @@
 Built-in imagegen is used for two concept previews and two production raster assets.
 Concept screenshots are reference images only; interface text, controls, timelines and charts are implemented as React components.
 
-Palette: midnight #080d16, panel #101824, mint #72e4bc, muted blue-gray #8290a4.
+Original concept palette: midnight #080d16, panel #101824, mint #72e4bc, muted blue-gray #8290a4.
 Layout: narrow left navigation, broad central workspace, compact right briefing. Chinese interface with restrained English micro-labels.
 Motion: brief fades and card expansion; disable decorative motion for prefers-reduced-motion.
 
@@ -20,3 +20,10 @@ Production background texture for AgentDock developer dashboard header, wide lan
 
 ### Transparent orbital decoration
 Production transparent PNG decorative orbital sculpture for AgentDock dashboard header. A single delicate 3D arrangement of three intersecting elliptical metallic mint rings around a tiny luminous mint point, fine etched ticks and a few small satellite dots. Refined scientific instrument, asymmetrical elegant perspective, muted mint and desaturated steel blue, very restrained bloom. Isolated cutout with genuine alpha transparency, no background, no ground plane, no text, no logo, no watermark; clean edges. Decoration must remain legible at small size.
+
+
+## 0.3 工作台界面
+
+当前产品采用浅色、深色与跟随系统三套语义颜色，保留青绿状态色，移除首页深空背景及轨道装饰。原 imagegen 概念图与提示词保留作历史参考，不代表当前界面截图。
+
+导航依次为工作台、工作目标、项目空间、历史记录、报告、日历和助手；来源与设置置于导航末尾。首页显示明确需处理事项、目标与近期日程。没有可靠分母时只显示完成数量。页面按需加载，筛选、会话详情和目标写入 URL，支持刷新与浏览器返回。用户未保存修改时提示保留或放弃。

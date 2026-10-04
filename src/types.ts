@@ -3,7 +3,7 @@ export type Completion = 'unconfirmed' | 'in_progress' | 'blocked' | 'done' | 'r
 export interface Evidence { path: string; line?: number; locator?: string }
 export interface Todo { text: string; status: string }
 export interface TaskEvent { timestamp: number; kind: string; text: string; evidence: Evidence }
-export interface Annotation { note: string; summaryOverride: string | null; manualStatus: Exclude<Completion, 'reported_complete'> | null; goalGroup: string; pinned: boolean; branchId?: string }
+export interface Annotation { note: string; summaryOverride: string | null; manualStatus: Exclude<Completion, 'reported_complete'> | null; goalGroup: string; pinned: boolean; branchId?: string; needsReview?: boolean }
 export interface Task {
   id: string; nativeId: string; provider: Provider; surface: string; title: string; goal: string;
   projectId: string; projectName: string; cwd: string; createdAt: number; updatedAt: number;

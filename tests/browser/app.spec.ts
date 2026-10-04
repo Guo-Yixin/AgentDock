@@ -13,7 +13,7 @@ test('real adapters, filtering, editing, linking, export and reload', async ({ p
   await dialog.getByRole('button', { name: '保存备注' }).click(); await expect(page.getByRole('status')).toContainText('已保存');
   const downloadEvent = page.waitForEvent('download'); await dialog.getByRole('button', { name: '导出摘要' }).click();
   const download = await downloadEvent; const markdown = await readFile((await download.path())!, 'utf8'); expect(markdown).toContain('人工补充摘要'); expect(markdown).toContain('跨工具交付');
-  await page.reload(); await page.getByRole('button', { name: /实现本地任务搜索/ }).first().click(); await expect(page.getByLabel('备注', { exact: true })).toHaveValue('测试备注：已验证搜索');
+  await page.reload(); await expect(page.getByRole('dialog')).toBeVisible(); await expect(page.getByLabel('备注', { exact: true })).toHaveValue('测试备注：已验证搜索');
   await expect(page.getByLabel('任务状态')).toHaveValue('done'); await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).not.toBeVisible();
   await page.getByRole('button', { name: '历史记录', exact: true }).click(); await page.getByLabel('搜索任务').fill('跨工具交付');
   await expect(page.getByRole('button', { name: /实现本地任务搜索/ }).first()).toBeVisible();
@@ -46,5 +46,5 @@ test('demo mode is separate and responsive screenshots match the visual directio
   await expect(page.getByRole('navigation', { name: '主导航' })).not.toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.getByLabel('打开导航').click(); await page.getByRole('button', { name: '工具接入', exact: true }).click(); await expect(page.getByRole('heading', { name: '来源连接' })).toBeVisible();
-  await page.emulateMedia({ reducedMotion: 'reduce' }); expect(await page.locator('.orbit-art').evaluate(el => getComputedStyle(el).animationName)).toBe('none');
+  await page.emulateMedia({ reducedMotion: 'reduce' }); await expect(page.locator('.orbit-art')).toHaveCount(0); expect(await page.locator('.sidebar').evaluate(el => getComputedStyle(el).transitionDuration)).toBe('0s');
 });

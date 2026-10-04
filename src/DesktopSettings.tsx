@@ -1,0 +1,8 @@
+import {useEffect,useState} from 'react';
+export function DesktopSettings({notify}:{notify:(s:string)=>void}){
+ const bridge=window.agentdock;const [prefs,setPrefs]=useState<DesktopPreferences>({autoStart:false,notifications:false}),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ useEffect(()=>{if(bridge)void bridge.preferences().then(setPrefs).catch(e=>setError(e.message));},[bridge]);
+ if(!bridge)return null;
+ async function action(fn:()=>Promise<unknown>){setBusy(true);setError('');try{await fn();}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
+ return <article className="source-panel"><h3>桌面与托盘</h3><p className="muted">关闭窗口后保留托盘与采集；从托盘退出才停止本应用服务。提醒需应用运行。</p>{error&&<p role="alert">{error}</p>}<fieldset disabled={busy}>{(['autoStart','notifications'] as const).map(k=><label key={k} className="check-field"><input type="checkbox" checked={prefs[k]} onChange={e=>void action(async()=>{setPrefs(await bridge!.setPreferences({[k]:e.target.checked}));notify('桌面设置已保存');})}/>{k==='autoStart'?'登录 Windows 后启动（默认关闭）':'启用桌面日程通知（默认关闭）'}</label>)}<div className="actions"><button onClick={()=>void action(async()=>{const r=await bridge!.importSettings();if(!r.cancelled)notify('旧配置已导入，请刷新设置页；原文件保留。');})}>导入旧本地配置</button><button onClick={()=>void action(async()=>{const r=await bridge!.checkUpdate();notify(r.latest?`当前 ${r.current} · 最新发布 ${r.latest}`:'尚无公开发布版本');})}>检查新版本</button><button onClick={()=>void bridge.openDownloads()}>打开版本下载页</button></div></fieldset><p className="muted">配置保存在当前用户 AppData/AgentDock。导入仅支持同一用户的 DPAPI 凭据，已有设置不会被覆盖。首版安装包未签名；升级和卸载保留用户配置及 MySQL 数据。</p></article>;
+}
