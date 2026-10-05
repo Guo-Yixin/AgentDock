@@ -50,6 +50,14 @@ export async function readLog(file, provider, previous, meta, onProgress) {
   task._parserVersion = PARSER_VERSION; task._sourceInode = stats.ino; task._unfinished = pending.length > 0;
   return { task: finalize(task), stats, offset, line, unfinished: pending.length > 0, unchanged: false, reset: reset && Boolean(previous) };
 }
+export function normalizeSourcePath(file){
+  let normal=String(file);
+  if(process.platform==='win32'){
+    if(normal.toUpperCase().startsWith('\\\\?\\UNC\\'))normal='\\\\'+normal.slice(8);
+    else if(normal.startsWith('\\\\?\\'))normal=normal.slice(4);
+  }
+  return path.resolve(normal);
+}
 function readonly(file) { const db = new DatabaseSync(file, { readOnly: true, timeout: 150 }); db.exec('PRAGMA query_only=ON;'); return db; }
 function safeRows(db, table) { try { return db.prepare(`SELECT * FROM ${table}`).all(); } catch { return []; } }
 function parsed(value) { try { return JSON.parse(value); } catch { return null; } }
@@ -113,7 +121,7 @@ export class Collector {
       const rows = db.prepare('SELECT * FROM threads ORDER BY updated_at DESC').all();
       for (const row of rows) {
         const meta = { nativeId: row.id, title: cleanText(row.name || row.title || '',180), cwd: row.cwd || '', createdAt: epoch(row.created_at_ms || row.created_at), updatedAt: epoch(row.updated_at_ms || row.updated_at), archived: Boolean(row.archived), evidence: { path: file, locator: `threads.id=${row.id}` }, surface: /desktop|daybreak/i.test(row.originator || '') ? '桌面' : /cli/i.test(row.source || '') ? 'CLI' : /vscode/i.test(row.source || '') ? '编辑器' : '桌面/服务' };
-        if (row.rollout_path) this.codexMeta.set(path.resolve(row.rollout_path), meta);
+        if (row.rollout_path) this.codexMeta.set(normalizeSourcePath(row.rollout_path), meta);
         const task = finalize(emptyTask('codex', row.id, file, meta));
         const existing = this.store.has?await this.store.has(task.id):await this.store.get(task.id);
         // Metadata must never overwrite an already parsed transcript or its evidence.
@@ -219,6 +227,13 @@ export class Collector {
           if (['workbuddy','deepseek'].includes(item.provider) && !result.task.goal && !result.task.summary && !result.task.partial) { result.task.partial = true; result.unchanged = false; }
           if (!result.unchanged) {
             await this.store.transaction(async tx => {
+              if(item.provider==='codex'&&result.reset&&previous&&previous.task.id!==result.task.id){
+                const oldId=previous.task.id;
+                await tx.rows("DELETE FROM ad_usage WHERE task_id=? AND JSON_UNQUOTE(JSON_EXTRACT(record,'$.evidence.path'))=?",[oldId,item.file]);
+                await tx.rows("DELETE FROM ad_events WHERE task_id=? AND JSON_UNQUOTE(JSON_EXTRACT(record,'$.evidence.path'))=?",[oldId,item.file]);
+                const parent=[...this.codexMeta.entries()].find(([file,meta])=>meta.nativeId===previous.task.nativeId&&file!==item.file);
+                if(parent&&existsSync(parent[0])){const restored=await readLog(parent[0],'codex',null,parent[1]);await tx.upsert(restored.task,true);await tx.saveCheckpoint(parent[0],restored.stats,restored.offset,restored.line,restored.task);}
+              }
               const sameSource = (await tx.get(result.task.id))?.evidence.path === item.file;
               await tx.upsert(result.task, result.reset && sameSource);
               await tx.saveCheckpoint(item.file, result.stats, result.offset, result.line, result.task);

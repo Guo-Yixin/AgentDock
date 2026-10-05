@@ -12,6 +12,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import {HistoryEditor, type History, tools as names} from "./UsageHistory";
 import { useAccount } from "./Auth";
 import { request } from "./api";
 import { today } from "./workspace/shared";
@@ -46,6 +47,8 @@ type Cost = {
   cacheUnknown?: number;
 };
 type Usage = {
+  history?: History;
+  lifetimeTools?: (Totals & {provider:string;model:string})[];
   summary: Totals;
   days: (Totals & { day: string })[];
   tools: (Totals & { provider: string; model: string })[];
@@ -57,6 +60,8 @@ type Usage = {
   options: { provider: string; model: string }[];
   profile: {
     total: number;
+    measuredTotal?: number;
+    historicalTotal?: number;
     peak: number;
     longest: number;
     current: number;
@@ -84,15 +89,6 @@ type UsageRecord = {
   sourceCurrency?: string;
   evidence: { path?: string; line?: number; locator?: string };
   issue?: string;
-};
-const names: Record<string, string> = {
-  codex: "Codex",
-  claude: "Claude Code",
-  cursor: "Cursor",
-  pi: "Pi CLI",
-  deepseek: "DeepSeek Harness",
-  workbuddy: "WorkBuddy",
-  agentdock: "AgentDock 助手",
 };
 const fmt = (n: number | null | undefined) =>
   n === null || n === undefined ? "未提供" : n.toLocaleString("zh-CN");
@@ -182,6 +178,8 @@ export default function UsagePage({
   openTask: (id: string) => void;
 }) {
   const { user } = useAccount(),
+    [scope, setScope] = useState("lifetime"),
+    [includeHistory, setIncludeHistory] = useState(true),
     [range, setRange] = useState("30"),
     [start, setStart] = useState(offsetDate(29)),
     [end, setEnd] = useState(today()),
@@ -309,6 +307,18 @@ export default function UsagePage({
       setBusy(false);
     }
   }
+  const historical = data?.history;
+  const combinedRows = (()=>{
+    const list = (scope==='lifetime'?data?.lifetimeTools || data?.tools:data?.tools)||[];
+    const result=list.map(t=>({...t,measured:t.total,historical:0}));
+    for(const r of (scope==='lifetime'?historical?.allocations:historical?.periodAllocations)||[]){
+      const t=result.find(x=>x.provider===r.provider&&x.model===r.model);
+      if(t){t.historical+=r.total;t.total+=r.total;}
+      else result.push({provider:r.provider,model:r.model,input:0,output:0,cacheRead:0,cacheWrite:0,total:r.total,records:0,incomplete:0,cacheUnknown:0,sessions:0,measured:0,historical:r.total});
+    }
+    return result.sort((a,b)=>b.total-a.total);
+  })();
+  const comparisonTotal=combinedRows.reduce((s,t)=>s+t.total,0);
   function exportSummary() {
     if (!data) return;
     const safe = (v: unknown) =>
@@ -318,27 +328,10 @@ export default function UsagePage({
         .replace(/^[=+@-]/, "'$&") +
       '"';
     const rows = [
-      [
-        "工具",
-        "模型",
-        "输入（含缓存）",
-        "缓存读取",
-        "缓存写入",
-        "输出",
-        "已记录总 token",
-        "用量记录",
-        "缺失输入或输出的记录",
-      ],
-      ...data.tools.map((t) => [
-        names[t.provider],
-        t.model,
-        t.input,
-        t.cacheRead,
-        t.cacheWrite,
-        t.output,
-        t.total,
-        t.records,
-        t.incomplete,
+      ["统计范围","数据性质","工具","模型","输入（含缓存）","缓存读取","缓存写入","输出","Token 总量","用量记录"],
+      ...combinedRows.flatMap(t=>[
+        ...(t.measured||t.records?[[scope,"日志实测",names[t.provider]||t.provider,t.model,t.input,t.cacheRead,t.cacheWrite,t.output,t.measured,t.records]]:[]),
+        ...(t.historical?[[scope,"历史估算（生成工作日）",names[t.provider]||t.provider,t.model,"","","","",t.historical,""]]:[]),
       ]),
     ];
     const text = "\uFEFF" + rows.map((r) => r.map(safe).join(",")).join("\r\n");
@@ -347,7 +340,7 @@ export default function UsagePage({
       ),
       a = document.createElement("a");
     a.href = url;
-    a.download = `agentdock-usage-${start}-${end}${demo ? "-demo" : ""}.csv`;
+    a.download = `agentdock-usage-${scope}-${start}-${end}${demo ? "-demo" : ""}.csv`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
@@ -374,7 +367,7 @@ export default function UsagePage({
       </div>
       <p className="muted usage-caption">
         跨工具用量，逐条有据。按 Asia/Shanghai
-        自然日统计；数字来自本机保留的用量记录。
+        自然日统计；日志实测与个人历史估算分别展示。
       </p>
       {error && (
         <p className="error-banner" role="alert">
@@ -394,16 +387,16 @@ export default function UsagePage({
           </div>
           <span className="usage-badge">
             <ShieldCheck size={15} />
-            已记录用量
+            {historical?.total ? "实测 + 历史估算" : "已记录用量"}
           </span>
         </div>
         <div className="usage-profile-stats">
           {[
             ["累计 Token", short(data?.profile.total || 0)],
-            ["单日用量峰值", short(data?.profile.peak || 0)],
-            ["活跃记录天数", fmt(data?.profile.activeDays || 0)],
-            ["最长连续天数", fmt(data?.profile.longest || 0) + " 天"],
-            ["当前连续天数", fmt(data?.profile.current || 0) + " 天"],
+            ["实测单日峰值", short(data?.profile.peak || 0)],
+            ["实测活跃天数", fmt(data?.profile.activeDays || 0)],
+            ["实测最长连续", fmt(data?.profile.longest || 0) + " 天"],
+            ["实测当前连续", fmt(data?.profile.current || 0) + " 天"],
           ].map(([label, value]) => (
             <div key={label}>
               <strong>{value}</strong>
@@ -412,9 +405,10 @@ export default function UsagePage({
           ))}
         </div>
         <p className="muted">
-          以上为当前工具、模型与项目筛选下的全部已保留历史；连续天数截至今天或昨天。
+          累计为当前工具、模型与项目筛选下的全部历史，不受日期范围限制。日志实测 {short(data?.profile.measuredTotal ?? data?.profile.total ?? 0)} + 历史估算 {short(historical?.total || 0)}；峰值、活跃与连续天数仅依据真实日志。
         </p>
       </section>
+      {!demo && <HistoryEditor history={historical} onSaved={()=>setRefresh(v=>v+1)}/> }
       <div className="usage-filters">
         <label>
           时间范围
@@ -540,9 +534,9 @@ export default function UsagePage({
             {[
               [
                 Layers3,
-                "已记录总 Token",
-                short(data.summary.total),
-                `输入 ${fmt(data.summary.input)} · 输出 ${fmt(data.summary.output)}`,
+                "当前范围总 Token",
+                short(data.summary.total + (historical?.periodTotal||0)),
+                `实测 ${short(data.summary.total)} · 历史估算 ${short(historical?.periodTotal||0)}；实测输入 ${fmt(data.summary.input)} / 输出 ${fmt(data.summary.output)}`,
               ],
               [
                 Activity,
@@ -577,9 +571,9 @@ export default function UsagePage({
               <h3>
                 <Flame size={18} /> Token 活动
               </h3>
-              <span className="muted">过去 365 天 · 已记录用量</span>
+              <label className="muted"><input type="checkbox" checked={includeHistory} onChange={e=>setIncludeHistory(e.target.checked)}/> 显示历史估算 · 过去 365 天</label>
             </div>
-            <Heatmap days={data.heatmap} />
+            <Heatmap days={data.heatmap} estimates={includeHistory ? historical?.days || [] : []} />
           </section>
           <div className="usage-charts">
             <section className="source-panel">
@@ -604,7 +598,8 @@ export default function UsagePage({
                     const day = new Date(epoch(start) + i * 86400000 + 28800000)
                       .toISOString()
                       .slice(0, 10);
-                    return (
+                    const estimated = historical?.days.find(d=>d.day===Math.floor((epoch(day)+28800000)/86400000))?.total||0;
+                    return {...(
                       data.days.find((d) => d.day === day) || {
                         day,
                         input: 0,
@@ -617,7 +612,7 @@ export default function UsagePage({
                         cacheUnknown: 0,
                         sessions: 0,
                       }
-                    );
+                    ),historical:estimated};
                   },
                 )}
               />
@@ -625,10 +620,10 @@ export default function UsagePage({
                 <span className="uncached">普通输入</span>
                 <span className="cached">缓存读取</span>
                 <span className="write">缓存写入</span>
-                <span className="output">输出</span>
+                <span className="output">输出</span><span className="unknown">未拆分实测</span><span className="historical">历史估算（未拆分）</span>
               </div>
               <p className="muted">
-                输入总数包含缓存；缓存字段缺失时，图中暂归入普通输入，计价可能高估。
+                输入总数包含缓存；紫色部分为生成日期的历史估算，无输入输出拆分，不计入费用。
               </p>
             </section>
             <section className="source-panel">
@@ -693,9 +688,10 @@ export default function UsagePage({
           <section className="source-panel usage-models">
             <div className="section-heading">
               <h3>工具与模型对比</h3>
-              <span className="muted">当前日期范围</span>
+              <select aria-label="模型对比范围" value={scope} onChange={e=>setScope(e.target.value)}><option value="lifetime">全部历史（与累计一致）</option><option value="period">当前日期范围</option></select>
             </div>
-            {data.tools.map((t) => (
+            <p className="muted">青绿：日志实测 · 紫色：个人历史估算；模型分配并非平台账单。对比合计 {short(comparisonTotal)}。</p>
+            {combinedRows.map((t) => (
               <div className="usage-model-row" key={t.provider + t.model}>
                 <div>
                   <strong>{names[t.provider] || t.provider}</strong>
@@ -704,19 +700,21 @@ export default function UsagePage({
                 <div className="model-bar">
                   <i
                     style={{
-                      width: `${data.summary.total ? (t.total / data.summary.total) * 100 : 0}%`,
+                      width: `${comparisonTotal ? (t.measured / comparisonTotal) * 100 : 0}%`,
                     }}
                   />
+                  <i className="historical-bar" style={{width:`${comparisonTotal ? t.historical/comparisonTotal*100 : 0}%`}}/>
                 </div>
                 <div>
                   <strong>{short(t.total)}</strong>
                   <small>
-                    输入 {short(t.input)} / 输出 {short(t.output)}
+                    实测 {short(t.measured)} / 历史估算 {short(t.historical)}
+                    {t.measured>0 && <> · 输入 {short(t.input)} / 输出 {short(t.output)}</>}
                   </small>
                 </div>
               </div>
             ))}
-            {!data.tools.length && (
+            {!combinedRows.length && (
               <p className="muted">
                 没有可解析的用量记录。采集到明确 usage 字段后会出现在这里。
               </p>
@@ -1037,12 +1035,14 @@ export default function UsagePage({
     </div>
   );
 }
-function Heatmap({ days }: { days: { day: number; total: number }[] }) {
+function Heatmap({ days, estimates }: { days: { day: number; total: number }[]; estimates: {day:number;total:number}[] }) {
+  const [activeDay,setActiveDay]=useState<number>();
   const now = Math.floor((Date.now() + 28800000) / 86400000),
     start = now - 364,
     startWeekday = new Date(start * 86400000).getUTCDay(),
     map = new Map(days.map((d) => [d.day, d.total])),
-    max = Math.max(1, ...days.map((d) => d.total));
+    estimated = new Map(estimates.map(d=>[d.day,d.total])),
+    max = Math.max(1,...Array.from({length:365},(_,i)=>(map.get(start+i)||0)+(estimated.get(start+i)||0)));
   return (
     <>
       <div className="heatmap-scroll">
@@ -1052,17 +1052,19 @@ function Heatmap({ days }: { days: { day: number; total: number }[] }) {
           ))}
           {Array.from({ length: 365 }, (_, i) => {
             const day = start + i,
-              n = map.get(day) || 0,
+              measured = map.get(day)||0, historical = estimated.get(day)||0,
+              n = measured + historical,
               level = n
                 ? Math.min(4, Math.max(1, Math.ceil(Math.sqrt(n / max) * 4)))
                 : 0,
               date = new Date(day * 86400000).toISOString().slice(0, 10);
             return (
               <button
-                className={`heatmap-cell level-${level}`}
+                className={`heatmap-cell level-${level} ${historical ? "estimated-day" : ""}`}
                 key={day}
-                aria-label={`${date}：${fmt(n)} 个已记录 token`}
-                title={`${date} · ${fmt(n)} tokens`}
+                onFocus={()=>setActiveDay(day)} onMouseEnter={()=>setActiveDay(day)}
+                aria-label={`${date}：${fmt(n)} Token；实测 ${fmt(measured)}，历史估算 ${fmt(historical)}`}
+                title={`${date} · 合计 ${fmt(n)}\n日志实测 ${fmt(measured)}\n历史估算 ${fmt(historical)}（生成工作日）`}
               />
             );
           })}
@@ -1074,19 +1076,20 @@ function Heatmap({ days }: { days: { day: number; total: number }[] }) {
           })}
         </div>
       </div>
+      <p className="muted heatmap-readout" aria-live="polite">{activeDay!==undefined?`${new Date(activeDay*86400000).toISOString().slice(0,10)} · 日志实测 ${fmt(map.get(activeDay)||0)} · 历史估算 ${fmt(estimated.get(activeDay)||0)}（生成工作日）`:'悬停或聚焦日期，查看实测与历史估算。'}</p>
       <div className="heatmap-legend">
         <span>少</span>
         {[0, 1, 2, 3, 4].map((i) => (
           <i key={i} className={`heatmap-cell level-${i}`} />
         ))}
-        <span>多</span>
+        <span>多</span><i className="heatmap-cell level-3 estimated-day"/><span>紫色描边：含估算日期</span>
       </div>
     </>
   );
 }
-function TokenChart({ days }: { days: (Totals & { day: string })[] }) {
+function TokenChart({ days }: { days: (Totals & { day: string; historical?:number })[] }) {
   const [active, setActive] = useState<string>(),
-    max = Math.max(1, ...days.map((d) => d.input + d.output)),
+    max = Math.max(1, ...days.map((d) => d.total + (d.historical||0))),
     width = 600,
     height = 175,
     gap = days.length > 90 ? 0 : 2,
@@ -1099,7 +1102,7 @@ function TokenChart({ days }: { days: (Totals & { day: string })[] }) {
         <svg
           viewBox={`0 0 ${width} ${height}`}
           role="img"
-          aria-label="每日输入、缓存和输出 token 图表"
+          aria-label="每日实测输入、缓存、输出及未拆分历史估算 Token 图表"
         >
           <path
             d={`M0 ${height - 1}H${width}M0 ${height / 2}H${width}M0 1H${width}`}
@@ -1111,6 +1114,8 @@ function TokenChart({ days }: { days: (Totals & { day: string })[] }) {
               d.cacheRead,
               d.cacheWrite,
               d.output,
+              Math.max(0,d.total-d.input-d.output),
+              d.historical || 0,
             ];
             let y = height;
             return (
@@ -1118,7 +1123,7 @@ function TokenChart({ days }: { days: (Totals & { day: string })[] }) {
                 key={d.day}
                 tabIndex={0}
                 role="button"
-                aria-label={`${d.day}：输入 ${d.input}，缓存读取 ${d.cacheRead}，输出 ${d.output}`}
+                aria-label={`${d.day}：输入 ${d.input}，缓存读取 ${d.cacheRead}，输出 ${d.output}，历史估算 ${d.historical||0}`}
                 onFocus={() => setActive(d.day)}
                 onBlur={() => setActive(undefined)}
                 onMouseEnter={() => setActive(d.day)}
@@ -1134,7 +1139,7 @@ function TokenChart({ days }: { days: (Totals & { day: string })[] }) {
                       y={y}
                       width={Math.max(0.1, barWidth - gap)}
                       height={h}
-                      className={["uncached", "cached", "write", "output"][k]}
+                      className={["uncached", "cached", "write", "output", "unknown", "historical"][k]}
                     />
                   );
                 })}
@@ -1159,7 +1164,7 @@ function TokenChart({ days }: { days: (Totals & { day: string })[] }) {
             </span>
             <span>缓存读取 {fmt(selected.cacheRead)}</span>
             <span>缓存写入 {fmt(selected.cacheWrite)}</span>
-            <span>输出 {fmt(selected.output)}</span>
+            <span>输出 {fmt(selected.output)}</span><span>未拆分实测 {fmt(Math.max(0,selected.total-selected.input-selected.output))}</span><span>历史估算 {fmt(selected.historical||0)}（生成日期）</span>
           </div>
         )}
       </div>

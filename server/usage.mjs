@@ -1,3 +1,4 @@
+import {historyOverview} from './usage-history.mjs';
 import { createHash, randomUUID } from "node:crypto";
 const hash = (value) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -511,7 +512,8 @@ const numeric = (row) =>
           : Number(v),
     ]),
   );
-export async function usageOverview(store, args) {
+export async function usageOverview(store, args = {}) {
+  args={start:0,end:Date.now()+86400000,...args};
   const f = filters(args),
     [summary] = await store.rows(
       `SELECT ${aggregate} FROM ad_usage WHERE ${f.sql}`,
@@ -580,7 +582,7 @@ export async function usageOverview(store, args) {
     `SELECT JSON_UNQUOTE(JSON_EXTRACT(record,'$.sourceCurrency')) currency,COUNT(*) records,SUM(JSON_EXTRACT(record,'$.sourceCost')) amount FROM ad_usage WHERE ${f.sql} AND JSON_TYPE(JSON_EXTRACT(record,'$.sourceCost')) IN ('INTEGER','DOUBLE','DECIMAL') GROUP BY currency`,
     f.params,
   );
-  const options = await store.rows(
+  let options = await store.rows(
     "SELECT DISTINCT provider,model FROM ad_usage ORDER BY provider,model",
   );
   const global = filters({ ...args, start: 0, end: Date.now() + 86400000 });
@@ -604,8 +606,13 @@ export async function usageOverview(store, args) {
   let current = 0,
     day = active.has(today) ? today : today - 1;
   while (active.has(day--)) current++;
+  const history = await historyOverview(store,args);
+  const lifetimeTools = await store.rows(`SELECT provider,model,${aggregate} FROM ad_usage WHERE ${global.sql} GROUP BY provider,model ORDER BY total DESC`,global.params);
+  for(const r of history.config?.enabled?history.config.allocations:[])if(!options.some(o=>o.provider===r.provider&&o.model===r.model))options.push({provider:r.provider,model:r.model});
   const profile = {
-    total: activity.reduce((s, d) => s + Number(d.total), 0),
+    total: activity.reduce((s, d) => s + Number(d.total), 0)+history.total,
+    measuredTotal:activity.reduce((s,d)=>s+Number(d.total),0),
+    historicalTotal:history.total,
     peak: Math.max(0, ...activity.map((d) => Number(d.total))),
     longest,
     current,
@@ -622,6 +629,8 @@ export async function usageOverview(store, args) {
     prices,
     options,
     profile,
+    history,
+    lifetimeTools:lifetimeTools.map(numeric),
     heatmap: activity
       .filter((d) => Number(d.day) >= today - 364)
       .map((d) => ({ day: Number(d.day), total: Number(d.total) })),

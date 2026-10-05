@@ -1,3 +1,4 @@
+import {saveHistory,disableHistory} from './usage-history.mjs';
 import {usageOverview,usageRecords,saveAssistantUsage,validatePrice} from './usage.mjs';
 import {authStatus,createOwner,login,account} from './auth.mjs';
 import {claimReminder,acknowledgeReminder} from './reminders.mjs';
@@ -25,7 +26,7 @@ async function connect(mysql,initialize=false){
  finally{switching=false;notify();}
 }
 const handlers={
- usageOverview:args=>usageOverview(store,args),usageRecords:args=>usageRecords(store,args),usageAssistant:args=>saveAssistantUsage(store,args),pricePut:async args=>{const prices=await store.documents('price');if(prices.length>=200)throw new Error('单价规则最多 200 条，请整理旧规则');return store.putDocument('price',validatePrice(args));},priceDelete:id=>store.deleteDocument(id,'price'),
+ historyPut:args=>saveHistory(store,args.input,args.ownerId),historyDisable:args=>disableHistory(store,args.ownerId),usageOverview:args=>store.transaction(tx=>usageOverview(tx,args)),usageRecords:args=>usageRecords(store,args),usageAssistant:args=>saveAssistantUsage(store,args),pricePut:async args=>{const prices=await store.documents('price');if(prices.length>=200)throw new Error('单价规则最多 200 条，请整理旧规则');return store.putDocument('price',validatePrice(args));},priceDelete:id=>store.deleteDocument(id,'price'),
  authStatus:async token=>({...await authStatus(database.connected?store:null,token),initializeAllowed:!database.connected&&await canInitialize(config.mysql),message:database.message}),authCreate:args=>createOwner(store,args),authLogin:args=>login(store,args),authAccount:args=>account(store,args),
  pause:async value=>{if(value===paused)return {paused};paused=value;if(paused){await collector?.stop();collector=null;}else if(store&&database.connected){collector=new Collector(store,collectionConfig(),collectionUpdated,collectionFailed);void collector.start().catch(collectionFailed);}notify();return {paused};},
  reportRefresh:async()=>{await reportRefresh();if(reportIssue)throw new Error(reportIssue);return {ok:true};},
@@ -55,7 +56,7 @@ const handlers={
  stop:async()=>{clearTimeout(reportTimer);clearInterval(healthTimer);await collector?.stop();await store?.close();return true;}
 };
 parentPort.on('message',async({id,method,args})=>{
- try{if(!handlers[method])throw new Error('未知接口');if((!store||!database.connected)&&!['authStatus','health','overview','list','configure','sources','pause','stop'].includes(method))throw new Error('请先配置并初始化 MySQL');if(switching&&!['health','overview'].includes(method))throw new Error('数据库正在切换，请稍后重试');const result=await handlers[method](args);parentPort.postMessage({id,result});if(['patch','configure','migrate','reportGenerate','reportPatch','reportAI','schedulePut','scheduleDelete','reminderAck','goalPut','goalLink','goalDelete'].includes(method))notify({type:method.startsWith('goal')?'goals':method.startsWith('report')?'reports':method.startsWith('schedule')||method.startsWith('reminder')?'schedules':method==='patch'?'tasks':'all',ids:args?.id?[args.id]:[]});}
+ try{if(!handlers[method])throw new Error('未知接口');if((!store||!database.connected)&&!['authStatus','health','overview','list','configure','sources','pause','stop'].includes(method))throw new Error('请先配置并初始化 MySQL');if(switching&&!['health','overview'].includes(method))throw new Error('数据库正在切换，请稍后重试');const result=await handlers[method](args);parentPort.postMessage({id,result});if(['historyPut','historyDisable','patch','configure','migrate','reportGenerate','reportPatch','reportAI','schedulePut','scheduleDelete','reminderAck','goalPut','goalLink','goalDelete'].includes(method))notify({type:method.startsWith('goal')?'goals':method.startsWith('report')?'reports':method.startsWith('schedule')||method.startsWith('reminder')?'schedules':method==='patch'?'tasks':'all',ids:args?.id?[args.id]:[]});}
  catch(e){parentPort.postMessage({id,error:e.code?databaseError(e):e.message});}
 });
 const healthTimer=setInterval(async()=>{

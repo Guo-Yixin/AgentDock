@@ -171,3 +171,16 @@ test("浅色组件无黑底、快捷操作与关注筛选可用", async ({ page 
   await page.getByRole("button", { name: /用量审计.*查看跨工具/ }).click();
   await expect(page.getByRole("heading", { name: "用量审计" })).toBeVisible();
 });
+
+test("历史补录：累计与对比一致，估算热力图可切换，导出标明性质",async({page,request})=>{
+ const measuredBefore=(await (await request.get(`/api/usage?start=${Date.now()-365*86400000}&end=${Date.now()+86400000}`)).json()).summary.records;
+ await page.goto('/usage');await page.getByRole('button',{name:'管理历史补录'}).click();await page.getByLabel('历史 Token 数量').fill('5');await page.getByLabel('补录依据与说明').fill('合成浏览器测试：估算工作日，不是请求证据');
+ try{
+ await page.getByRole('button',{name:'保存历史补录',exact:true}).click();await expect(page.locator('.usage-profile-stats strong').first()).toHaveText('5.00 亿');await expect(page.getByText(/对比合计 5.00 亿/)).toBeVisible();
+ await expect(page.locator('.heatmap-grid .estimated-day').first()).toBeVisible();await page.getByLabel(/显示历史估算/).uncheck();await expect(page.locator('.heatmap-grid .estimated-day')).toHaveCount(0);await page.getByLabel(/显示历史估算/).check();
+ await page.reload();await expect(page.locator('.usage-profile-stats strong').first()).toHaveText('5.00 亿');
+ const result=await (await request.get(`/api/usage?start=${Date.now()-365*86400000}&end=${Date.now()+86400000}`)).json();expect(result.summary.records).toBe(measuredBefore);expect(result.profile.total).toBe(500000000);expect(result.history.days.reduce((s:number,d:{total:number})=>s+d.total,0)).toBe(result.history.total);
+ const download=page.waitForEvent('download');await page.getByRole('button',{name:'导出汇总 CSV'}).click();const stream=await (await download).createReadStream();let csv='';for await(const chunk of stream!)csv+=chunk;expect(csv).toContain('历史估算（生成工作日）');
+ await page.getByLabel('界面主题').selectOption('light');await page.screenshot({path:'artifacts/screenshots/history-light.png',fullPage:true});await page.setViewportSize({width:390,height:844});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+ }finally{await request.delete('/api/usage/history');}
+});

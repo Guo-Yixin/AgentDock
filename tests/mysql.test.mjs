@@ -4,7 +4,7 @@ import { mkdtempSync,mkdirSync,writeFileSync,appendFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { emptyTask,finalize } from '../server/parsers.mjs';
-import { readLog } from '../server/collector.mjs';
+import { readLog, Collector } from '../server/collector.mjs';
 import { openStore,canInitialize } from '../server/store.mjs';
 import { generateReport,migrateLegacy,buildContext } from '../server/workspace.mjs';
 import { testStore } from './mysql-helper.mjs';
@@ -75,7 +75,6 @@ test('MySQL: 迁移中断重跑不修改源文件、不覆盖用户编辑',{skip
  const {store}=await testStore('agentdock_test_resume');const dir=mkdtempSync(path.resolve('artifacts/unit/migration-'));const file=path.join(dir,'old.sqlite');const source=new DatabaseSync(file);source.exec('CREATE TABLE tasks(id TEXT,record TEXT);CREATE TABLE annotations(task_id TEXT,value TEXT,updated_at INTEGER);CREATE TABLE checkpoints(path TEXT,size INTEGER,mtime INTEGER,offset INTEGER,line INTEGER,state TEXT)');for(let i=0;i<3;i++){const t=finalize(emptyTask('pi','migration-'+i,'source.jsonl',{title:'迁移会话 '+i}));source.prepare('INSERT INTO tasks VALUES(?,?)').run(t.id,JSON.stringify(t));}source.close();const {readFileSync}=await import('node:fs');const original=readFileSync(file);let count=0;const wrapper=Object.create(store);wrapper.transaction=fn=>{if(++count===2)throw new Error('模拟迁移中断');return store.transaction(fn);};
  try{await assert.rejects(migrateLegacy(wrapper,file),/中断/);assert.equal((await store.list()).total,1);await migrateLegacy(store,file);await migrateLegacy(store,file);assert.equal((await store.list()).total,3);assert.deepEqual(readFileSync(file),original);}finally{await store.close();}
 });
-import {Collector} from '../server/collector.mjs';
 test('MySQL: Cursor 独立消息完整导入、重复采集与用户标记保留',{skip:!enabled},async()=>{
  const {store}=await testStore('agentdock_test_cursor');const dir=mkdtempSync(path.resolve('artifacts/unit/cursor-'));const root=path.join(dir,'Cursor');mkdirSync(path.join(root,'globalStorage'),{recursive:true});const file=path.join(root,'globalStorage','state.vscdb');const db=new DatabaseSync(file);db.exec('CREATE TABLE composerHeaders(composerId TEXT,value TEXT);CREATE TABLE cursorDiskKV(key TEXT,value TEXT)');const start=Date.parse('2026-09-29T08:00:00Z');const headers=Array.from({length:220},(_,i)=>({bubbleId:'bubble-'+i,type:i%2?2:1,createdAt:new Date(start+i*60000).toISOString()}));db.prepare('INSERT INTO composerHeaders VALUES(?,?)').run('history-id',JSON.stringify({composerId:'history-id',createdAt:start,isArchived:true}));const insert=db.prepare('INSERT INTO cursorDiskKV VALUES(?,?)');insert.run('composerData:history-id',JSON.stringify({composerId:'history-id',createdAt:start,fullConversationHeadersOnly:headers,conversationMap:{},workspaceIdentifier:{uri:{fsPath:dir}}}));db.exec('BEGIN');for(const h of headers)insert.run('bubbleId:history-id:'+h.bubbleId,JSON.stringify({...h,text:'历史消息 '+h.bubbleId}));db.exec('COMMIT');db.close();const collector=new Collector(store,{home:dir,codex:dir,claude:dir,cursor:root},()=>{});
  try{await collector.cursorIndex();const t=(await store.list({provider:'cursor'})).tasks[0];assert.equal(t.partial,false);assert.equal(t.archived,true);assert.equal(t.cwd,dir);assert.equal(t.summary,'历史消息 bubble-219');assert.equal((await store.events({task:t.id,start,end:start+86400000})).length,220);const annotation=(await store.patch(t.id,{note:'保留的用户备注',manualStatus:'done'})).annotation;await collector.cursorIndex();assert.equal((await store.list({provider:'cursor'})).total,1);assert.equal((await store.events({task:t.id,start,end:start+86400000})).length,220);assert.deepEqual((await store.get(t.id)).annotation,annotation);assert.match((await store.get(t.id)).summaryEvidence.locator,/bubbleId=bubble-219/);}finally{await collector.stop();await store.close();}
@@ -90,3 +89,47 @@ test('MySQL: 工作目标、旧文本迁移、完整分页与待处理口径',{s
 
 import {claimReminder,acknowledgeReminder} from '../server/reminders.mjs';
 test('MySQL: 提醒领取互斥、过期恢复与确认',{skip:!enabled},async()=>{const {store}=await testStore('agentdock_test_reminders');try{const s=await store.putDocument('schedule',{title:'合成提醒',start:Date.now()-1000,end:Date.now()+60000,reminderMinutes:0,done:false});const claims=await Promise.all(['desktop','browser'].map(owner=>claimReminder(store,{id:s.id,owner})));assert.equal(claims.filter(c=>c.claimed).length,1);await assert.rejects(acknowledgeReminder(store,{id:s.id,claim:'invalid'}),/过期/);const old=await store.document(s.id,'schedule');await store.putDocument('schedule',{...old,claimUntil:Date.now()-1});const next=await claimReminder(store,{id:s.id,owner:'browser'});assert.equal(next.claimed,true);await acknowledgeReminder(store,{id:s.id,claim:next.token});assert.equal((await claimReminder(store,{id:s.id,owner:'desktop'})).claimed,false);}finally{await store.close();}});
+
+import {saveHistory,disableHistory} from '../server/usage-history.mjs';
+test('MySQL: 历史基准、重复保存、恢复替换、新增累加、筛选与重启持久化',{skip:!enabled},async()=>{
+ const {store,config}=await testStore('agentdock_test_history');try{
+ await createOwner(store,{username:'synthetic_history_owner',password:'synthetic-history-pass'});
+ const old=Date.parse('2024-03-04T12:00:00+08:00');
+ const make=(name,total,timestamp)=>{const task=finalize(emptyTask('claude',name,'synthetic-'+name+'.jsonl',{createdAt:timestamp,updatedAt:timestamp}));task._newUsage=[{id:name.padEnd(64,'a'),model:'synthetic',timestamp,input:total-10,output:10,total,cacheRead:0,cacheWrite:0,mode:'request',evidence:{path:task.evidence.path,line:1}}];return task;};
+ await store.upsert(make('first',1000,old));
+ const value={mode:'target',tokens:5558000000,note:'合成测试：工作日估算',start:'2024-03-04',end:'2024-03-08',allocations:[{provider:'codex',model:'recalled',weight:8500},{provider:'cursor',model:'recalled',weight:1500}]};
+ await assert.rejects(saveHistory(store,value,'other'));
+ await saveHistory(store,value,'owner');await saveHistory(store,value,'owner');
+ let o=await store.transaction(tx=>usageOverview(tx,{start:0,end:Date.now()+86400000}));
+ assert.equal(o.profile.total,value.tokens);assert.equal(o.summary.total,1000);assert.equal(o.history.periodTotal,value.tokens-1000);assert.equal(o.history.days.reduce((s,d)=>s+d.total,0),o.history.total);assert.equal(o.costs.length,0);
+ await store.upsert(make('recovered',2000,old));
+ o=await usageOverview(store,{});assert.equal(o.profile.total,value.tokens);assert.equal(o.history.recovered,2000);
+ await store.upsert(make('new',3000,Date.now()+100));
+ o=await usageOverview(store,{});assert.equal(o.profile.total,value.tokens+3000);
+ const p=await usageOverview(store,{provider:'codex'});assert.equal(p.profile.total,p.history.total);assert.equal(p.history.total,Math.floor((value.tokens-3000)*.85));
+ const project=await usageOverview(store,{project:'unassigned'});assert.equal(project.history.total,0);assert.equal(project.history.projectExcluded,true);
+ const period=await usageOverview(store,{start:Date.parse('2024-03-05T00:00:00+08:00'),end:Date.parse('2024-03-06T00:00:00+08:00')});assert.equal(period.history.periodTotal,period.history.days.find(d=>new Date(d.day*86400000).toISOString().slice(0,10)==='2024-03-05').total);
+ const reopened=await openStore(config);try{assert.equal((await usageOverview(reopened,{})).profile.total,value.tokens+3000);}finally{await reopened.close();}
+ await disableHistory(store,'owner');assert.equal((await usageOverview(store,{})).profile.total,6000);assert.equal((await store.document('usage-history-owner','usage-history')).versions.length,2);
+ }finally{await store.close();}
+});
+
+test('MySQL: Codex 旧分叉断点修复父子归属、用量去重、用户备注和接入健康',{skip:!enabled},async()=>{
+ const {store}=await testStore('agentdock_test_fork');try{
+ const root=mkdtempSync(path.join(process.cwd(),'artifacts','fork-')),logs=path.join(root,'sessions');mkdirSync(logs,{recursive:true});
+ const parentFile=path.join(logs,'parent.jsonl'),childFile=path.join(logs,'child.jsonl');
+ const time='2024-03-04T12:00:00Z';const usage=n=>({type:'event_msg',timestamp:time,payload:{type:'token_count',info:{total_token_usage:{input_tokens:n,output_tokens:10,total_tokens:n+10}}}});
+ const meta=id=>({type:'session_meta',timestamp:time,payload:{id,cwd:root}});const write=(file,records)=>writeFileSync(file,records.map(JSON.stringify).join('\n')+'\n');
+ write(parentFile,[meta('parent'),usage(100)]);write(childFile,[{...meta('child'),payload:{...meta('child').payload,forked_from_id:'parent'}},meta('parent'),usage(200)]);
+ const db=new DatabaseSync(path.join(root,'state_5.sqlite'));db.exec('CREATE TABLE threads(id TEXT,rollout_path TEXT,cwd TEXT,title TEXT,created_at INTEGER,updated_at INTEGER)');for(const [id,file]of [['parent',parentFile],['child',childFile]])db.prepare('INSERT INTO threads VALUES(?,?,?,?,?,?)').run(id,file,root,id,1709553600,1709553600);db.close();
+ const parent=await readLog(parentFile,'codex');await store.upsert(parent.task);
+ const child=await readLog(childFile,'codex');const old={...child.task,id:parent.task.id,nativeId:'parent',_parserVersion:7};await store.upsert(old,true);await store.saveCheckpoint(childFile,child.stats,child.offset,child.line,old);
+ await store.patch(parent.task.id,{note:'父会话备注',manualStatus:'done'});const confirmed=(await store.get(parent.task.id)).annotation.confirmedAt;
+ const missing=finalize(emptyTask('codex','lost','missing-index',{partial:true}));await store.upsert(missing);
+ const collector=new Collector(store,{home:root,codex:root,claude:path.join(root,'claude'),cursor:path.join(root,'cursor')},()=>{});await collector.scan();
+ const repaired=await store.get(child.task.id);assert.equal(repaired.nativeId,'child');assert.equal(repaired.partial,false);assert.equal((await store.get(parent.task.id)).annotation.note,'父会话备注');assert.equal((await store.get(parent.task.id)).annotation.confirmedAt,confirmed);
+ assert.equal((await usageOverview(store,{})).summary.total,320);
+ await collector.scan();assert.equal((await usageOverview(store,{})).summary.total,320);
+ const o=await store.overview(collector.sources,collector.progress);const source=o.sources.find(s=>s.id==='codex');assert.equal(source.state,'ready');assert.equal(source.partialSessions,1);assert.match(source.message,/历史会话/);
+ }finally{await store.close();}
+});

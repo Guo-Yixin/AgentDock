@@ -4,7 +4,7 @@ import path from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 
 export const hash = value => createHash('sha256').update(value).digest('hex').slice(0, 24);
-export const PARSER_VERSION = 7;
+export const PARSER_VERSION = 8;
 export function epoch(value, fallback = 0) {
   if (typeof value === 'number') return value < 1e11 ? value * 1000 : value;
   const result = Date.parse(value); return Number.isFinite(result) ? result : fallback;
@@ -80,7 +80,10 @@ export function consumeCodex(task, record, evidence) {
   const item = record.payload || {}; const timestamp = epoch(record.timestamp);
   if (timestamp) { task.createdAt ||= timestamp; task.updatedAt = Math.max(task.updatedAt, timestamp); }
   if (record.type === 'session_meta') {
-    task.nativeId = item.id || item.session_id || task.nativeId; task.id = `codex-${hash(task.nativeId)}`;
+    const nativeId=item.id||item.session_id;
+    if(task._codexSessionId&&nativeId&&nativeId!==task._codexSessionId)return task;
+    task._codexSessionId ||= nativeId;task.parentNativeId ||= item.forked_from_id||item.parent_thread_id||'';
+    task.nativeId = nativeId || task.nativeId; task.id = `codex-${hash(task.nativeId)}`;
     task.cwd = item.cwd || task.cwd;
     const source = typeof item.source === 'object' ? item.source?.type || JSON.stringify(item.source) : item.source || '';
     const origin = String(item.originator || item.thread_source || '');
