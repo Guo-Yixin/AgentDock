@@ -1,3 +1,5 @@
+import {createOwner} from '../server/auth.mjs';
+import {testAccount} from '../tests/account-fixture.mjs';
 import { testStore } from '../tests/mysql-helper.mjs';
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
@@ -7,7 +9,7 @@ mkdirSync(path.join(project, '.git'), { recursive: true });
 const codex = path.join(home, '.codex'); const sessions = path.join(codex, 'sessions'); const claude = path.join(home, '.claude', 'projects', 'sample-project'); const cursor = path.join(home, 'AppData', 'Roaming', 'Cursor', 'User', 'globalStorage');
 for (const dir of [sessions, claude, cursor]) mkdirSync(dir, { recursive: true });
 const logfile = path.join(sessions, 'sample.jsonl');
-writeFileSync(logfile, [{ type: 'session_meta', timestamp: now, payload: { id: 'test-codex', cwd: project, source: 'cli' } }, { type: 'response_item', timestamp: now, payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '实现本地任务搜索' }] } }, { type: 'response_item', timestamp: now, payload: { type: 'message', role: 'assistant', channel: 'final', content: [{ type: 'output_text', text: '已实现任务搜索，等待人工验证。' }] } }, { type: 'event_msg', timestamp: now, payload: { type: 'task_complete' } }].map(r => JSON.stringify(r)).join('\n') + '\n');
+writeFileSync(logfile, [{ type: 'session_meta', timestamp: now, payload: { id: 'test-codex', cwd: project, source: 'cli' } }, { type: 'response_item', timestamp: now, payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '实现本地任务搜索' }] } }, { type: 'response_item', timestamp: now, payload: { type: 'message', role: 'assistant', channel: 'final', content: [{ type: 'output_text', text: '已实现任务搜索，等待人工验证。' }] } }, { type: 'event_msg', timestamp: now, payload: { type: 'task_complete' } },{type:'turn_context',timestamp:now,payload:{model:'synthetic-audit-model'}},{type:'event_msg',timestamp:now,payload:{type:'token_count',info:{total_token_usage:{input_tokens:1000,cached_input_tokens:600,output_tokens:100,total_tokens:1100}}}}].map(r => JSON.stringify(r)).join('\n') + '\n');
 const codexDb = new DatabaseSync(path.join(codex, 'state_5.sqlite')); codexDb.exec('CREATE TABLE IF NOT EXISTS threads(id TEXT PRIMARY KEY,title TEXT,cwd TEXT,source TEXT,created_at INTEGER,updated_at INTEGER,rollout_path TEXT,archived INTEGER)');
 codexDb.prepare('INSERT OR REPLACE INTO threads VALUES(?,?,?,?,?,?,?,?)').run('test-codex', '实现本地任务搜索', project, 'cli', Date.now(), Date.now(), logfile, 0); codexDb.close();
 writeFileSync(path.join(claude, 'sample.jsonl'), [{ type: 'user', sessionId: 'test-claude', timestamp: now, cwd: project, entrypoint: 'cli', message: { content: '验证历史导入' } }, { type: 'assistant', sessionId: 'test-claude', timestamp: now, message: { content: [{ type: 'text', text: '已检查导入边界，需确认测试结果。' }] } }].map(r => JSON.stringify(r)).join('\n') + '\n');
@@ -15,7 +17,7 @@ const db = new DatabaseSync(path.join(cursor, 'state.vscdb')); db.exec('CREATE T
 db.prepare('INSERT OR REPLACE INTO composerHeaders VALUES(?,?)').run('test-cursor', JSON.stringify({ composerId: 'test-cursor', createdAt: Date.now(), workspaceIdentifier: project }));
 db.prepare('INSERT OR REPLACE INTO cursorDiskKV VALUES(?,?)').run('composerData:test-cursor', JSON.stringify({ composerId: 'test-cursor', name: '完善来源列表', workspaceIdentifier: project, conversationMap: { a: { type: 1, text: '完善来源列表' }, b: { type: 2, text: '已完成页面，实现待确认。' } } })); db.close();
 process.env.AGENTDOCK_HOME = home; process.env.AGENTDOCK_DATA = path.resolve('artifacts/e2e/data'); process.env.AGENTDOCK_PORT = '4318';
-const { store, config } = await testStore('agentdock_e2e'); await store.close();
+const { store, config } = await testStore('agentdock_e2e'); await createOwner(store,testAccount);await store.close();
 for (const name of ['host','port','user','password','database']) process.env['AGENTDOCK_MYSQL_'+name.toUpperCase()] = String(config[name]); process.env.AGENTDOCK_MYSQL_TLS=String(config.tls);
 const testIndex = path.join(process.env.AGENTDOCK_DATA, 'agentdock.sqlite');
 

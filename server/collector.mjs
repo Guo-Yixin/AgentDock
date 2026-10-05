@@ -20,7 +20,7 @@ export async function readLog(file, provider, previous, meta, onProgress) {
   const reset = !previous || previous.task._parserVersion !== PARSER_VERSION || previous.task._sourceInode !== stats.ino || stats.size < previous.offset || (stats.size === previous.size && stats.mtimeMs !== previous.mtime);
   let offset = reset ? 0 : previous.offset; let line = reset ? 0 : previous.line;
   let task = reset ? emptyTask(provider, path.basename(file, '.jsonl'), file, meta) : previous.task;
-  task._newEvents = [];
+  task._newEvents = [];task._newUsage=[];
   if (!reset && stats.mtimeMs === previous.mtime && stats.size === previous.size) {
     const metadataChanged = meta && ((meta.title && task.title !== meta.title) || (meta.archived !== undefined && task.archived !== meta.archived));
     if (!metadataChanged) return { unchanged: true, task, stats, offset, line, unfinished: Boolean(task._unfinished) };
@@ -60,7 +60,7 @@ export async function readCompressed(file, previous, meta = {}) {
   if (stats.size > 128 * 1024 * 1024) throw new Error('压缩日志超过当前读取上限');
   const bytes = await readFile(file); const scanned = zstdFrames(bytes);
   let task = reset ? emptyTask('deepseek', path.basename(path.dirname(file)), file, meta) : previous.task;
-  task._newEvents = []; let offset = reset ? 0 : previous.offset; let line = reset ? 0 : previous.line; let pending = reset ? '' : task._compressedPending || '';
+  task._newEvents = [];task._newUsage=[]; let offset = reset ? 0 : previous.offset; let line = reset ? 0 : previous.line; let pending = reset ? '' : task._compressedPending || '';
   for (const frame of scanned.frames) {
     if (frame.end <= offset) continue;
     pending += decodeFrame(bytes.subarray(frame.start, frame.end)); const rows = pending.split('\n'); pending = rows.pop();

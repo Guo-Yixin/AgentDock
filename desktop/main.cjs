@@ -25,7 +25,8 @@ function trayMenu(paused=false){tray?.setContextMenu(Menu.buildFromTemplate([
  {type:'separator'},{label:'退出',click:()=>app.quit()}
 ]));}
 async function backend(url,body,method='POST'){
- const response=await fetch(origin+url,{method:body===undefined?'GET':method,headers:{'X-AgentDock-Session':token,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(15000)});
+ const cookies=await win.webContents.session.cookies.get({url:origin+'/api/'});const cookie=cookies.filter(c=>c.name==='ad_desktop_session').map(c=>`${c.name}=${c.value}`).join('; ');
+ const response=await fetch(origin+url,{method:body===undefined?'GET':method,headers:{Cookie:cookie,'X-AgentDock-Session':token,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(15000)});
  const data=await response.json();if(!response.ok)throw new Error(data.error||'本地服务不可用');return data;
 }
 function trusted(event){if(event.sender!==win?.webContents||!origin||new URL(event.senderFrame.url).origin!==origin)throw new Error('不可信的桌面请求');}

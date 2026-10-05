@@ -1,6 +1,6 @@
 export async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', ...options?.headers } });
-  if (!response.ok) { const error = await response.json().catch(() => ({ error: '服务暂不可用' })); throw new Error(error.error || `请求失败 (${response.status})`); }
+  const response = await fetch(url, { ...options, headers: { ...(options?.body!==undefined?{'Content-Type':'application/json'}:{}), ...options?.headers } });
+  if (!response.ok) { if(response.status===401&&!url.startsWith('/api/auth/'))window.dispatchEvent(new Event('agentdock:unauthorized')); const error = await response.json().catch(() => ({ error: '服务暂不可用' })); throw new Error(error.error || `请求失败 (${response.status})`); }
   return response.json();
 }
 export function saveFile(text: string, name: string) {

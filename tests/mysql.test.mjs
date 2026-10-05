@@ -5,10 +5,36 @@ import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { emptyTask,finalize } from '../server/parsers.mjs';
 import { readLog } from '../server/collector.mjs';
-import { openStore } from '../server/store.mjs';
+import { openStore,canInitialize } from '../server/store.mjs';
 import { generateReport,migrateLegacy,buildContext } from '../server/workspace.mjs';
 import { testStore } from './mysql-helper.mjs';
+import {createOwner,login,authStatus,account} from '../server/auth.mjs';
+import {saveUsage,usageOverview,usageRecords,validatePrice} from '../server/usage.mjs';
 const enabled=process.env.AGENTDOCK_INTEGRATION==='true';
+test('MySQL: 账号初始化竞态、会话吊销和修改密码不泄露哈希',{skip:!enabled},async()=>{
+ const {store,config}=await testStore('agentdock_test_auth');try{
+ assert.equal(await canInitialize(config),true);
+ const owner={username:'synthetic_owner',password:'synthetic-owner-pass'};const results=await Promise.allSettled([createOwner(store,owner),createOwner(store,owner)]);assert.equal(results.filter(r=>r.status==='fulfilled').length,1);assert.equal(await canInitialize(config),false);
+ const a=await login(store,owner),b=await login(store,{...owner,desktop:true,remember:true});assert.equal((await authStatus(store,a.token)).user.username,owner.username);assert.equal(a.user.password_hash,undefined);assert.ok(!(await store.rows('SELECT password_hash FROM ad_users'))[0].password_hash.includes(owner.password));await assert.rejects(login(store,{...owner,password:'wrong-password'}));
+ const sessions=await account(store,{token:a.token,action:'sessions'});assert.equal(sessions.length,2);assert.ok(sessions.some(s=>s.current));assert.ok(sessions.every(s=>!s.id.includes(a.token)));
+ await account(store,{token:a.token,action:'revoke'});assert.equal((await authStatus(store,b.token)).user,null);await account(store,{token:a.token,action:'profile',displayName:'中文所有者'});assert.equal((await authStatus(store,a.token)).user.displayName,'中文所有者');
+ await account(store,{token:a.token,action:'password',currentPassword:owner.password,password:'synthetic-new-password'});assert.equal((await authStatus(store,a.token)).user,null);await assert.rejects(login(store,owner));const c=await login(store,{...owner,password:'synthetic-new-password'});await account(store,{token:c.token,action:'logout'});assert.equal((await authStatus(store,c.token)).user,null);
+ }finally{await store.close();}
+});
+test('MySQL: 请求分段取最大值、累计双记录去重、历史单价与币种分开',{skip:!enabled},async()=>{
+ const {store}=await testStore('agentdock_test_usage');try{
+ const timestamp=Date.parse('2026-09-30T12:00:00+08:00'),task=finalize(emptyTask('claude','synthetic-usage','synthetic.jsonl',{updatedAt:timestamp,createdAt:timestamp,title:'用量验收'}));
+ const u={id:'a'.repeat(64),model:'synthetic',timestamp,input:100,cacheRead:60,cacheWrite:10,output:5,total:105,cacheWriteLong:0,mode:'request',evidence:{path:'synthetic.jsonl',line:1}};
+ task._newUsage=[u,{...u,output:20,total:120}];await store.upsert(task);await store.upsert({...task,_newUsage:[u]});assert.equal(Number((await store.rows('SELECT COUNT(*) n FROM ad_usage'))[0].n),1);
+ const record=(await usageRecords(store,{start:timestamp-86400000,end:timestamp+86400000})).records[0];assert.equal(record.output,20);assert.equal(record.total,120);
+ const price={provider:'claude',model:'synthetic',currency:'USD',date:'2026-09-01',input:2,output:4,cacheRead:1,cacheWrite:3,cacheWriteLong:6};await store.putDocument('price',validatePrice(price));await store.putDocument('price',validatePrice({...price,date:'2026-09-30',currency:'CNY',input:10,output:20,cacheRead:5,cacheWrite:15,cacheWriteLong:30}));
+ let overview=await usageOverview(store,{start:timestamp-86400000,end:timestamp+86400000});assert.equal(overview.summary.total,120);assert.equal(overview.coverage.measuredSessions,1);assert.equal(overview.costs.reduce((s,c)=>s+c.records,0),1);assert.equal(overview.costs.find(c=>c.currency==='CNY').amount,.00115);
+ const codex={...task,id:'codex-synthetic',provider:'codex',_newUsage:[{...u,id:'b'.repeat(64),mode:'codex_direct'}]};await saveUsage(store,codex);await saveUsage(store,{...codex,_codexHasTotals:true,_newUsage:[{...u,id:'c'.repeat(64),mode:'codex_cumulative'}]});assert.equal(Number((await store.rows('SELECT COUNT(*) n FROM ad_usage WHERE task_id=?',[codex.id]))[0].n),1);
+ const snapshot=(id,input,output,time)=>({...u,id:id.repeat(64),input,output,total:input+output,cacheRead:0,cacheWrite:0,timestamp:time,mode:'codex_cumulative',cumulative:{input_tokens:input,cached_input_tokens:0,cache_write_input_tokens:0,output_tokens:output,total_tokens:input+output}});const merged={...task,id:'codex-archive-merge',provider:'codex',_codexHasTotals:true,_newUsage:[snapshot('f',200,20,timestamp+10)]};await saveUsage(store,merged);await saveUsage(store,{...merged,_newUsage:[snapshot('9',100,10,timestamp)]});assert.equal(Number((await store.rows('SELECT SUM(total_tokens) total FROM ad_usage WHERE task_id=?',[merged.id]))[0].total),220);await saveUsage(store,merged);assert.equal(Number((await store.rows('SELECT SUM(total_tokens) total FROM ad_usage WHERE task_id=?',[merged.id]))[0].total),220);
+ const missing={...task,_newUsage:[{...u,id:'d'.repeat(64),input:null,total:null,output:3,model:'missing-model'}]};await saveUsage(store,missing);await saveUsage(store,missing);overview=await usageOverview(store,{start:timestamp-86400000,end:timestamp+86400000});assert.equal(overview.summary.incomplete,1);assert.equal((await usageRecords(store,{start:timestamp-86400000,end:timestamp+86400000})).records.find(r=>r.model==='missing-model').input,null);
+ await assert.rejects(store.transaction(async tx=>{await saveUsage(tx,{...task,_newUsage:[{...u,id:'e'.repeat(64)}]});throw new Error('事务中断');}));assert.equal(Number((await store.rows('SELECT COUNT(*) n FROM ad_usage WHERE id=?',['e'.repeat(64)]))[0].n),0);
+ }finally{await store.close();}
+});
 test('MySQL: 原子断点、回滚、中文查询、确认时间与重启', {skip:!enabled}, async()=>{
  const {store,config}=await testStore('agentdock_test_store');const t=finalize(emptyTask('codex','test-id','sample.jsonl',{title:'修复同步😀',summary:'来源摘要',updatedAt:Date.now()}));
  try {

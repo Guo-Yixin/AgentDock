@@ -1,3 +1,4 @@
+import {consumeUsage} from './usage.mjs';
 import { zstdDecompressSync } from 'node:zlib';
 import { hash, message, addEvent, setTodos, contentText, cleanText, epoch } from './parsers.mjs';
 
@@ -41,6 +42,7 @@ export function consumeExtra(task, row, evidence) {
     if (row.type === 'turn/end') { if (task._harnessText) { message(task, 'assistant', task._harnessText, timestamp, location); task._harnessText = ''; } const reason=typeof data.reason==='string'?data.reason:data.reason?.kind;task.sourceOutcome=reason;task.activity=['completed','stop'].includes(reason)?'responded':['aborted','blocked','error','max-tokens','interrupted'].includes(reason)?'interrupted':'unknown';task.blockedEvidence=reason==='blocked'?location:null;addEvent(task, 'status', reason==='blocked'?'本轮阻塞，整体任务尚未确认':'本轮结束，整体任务完成待确认', timestamp, location); }
     if (/todo/.test(row.type)) setTodos(task, data.todos || data.items);
   }
+  consumeUsage(task,row,evidence,timestamp);
   task.id = `${task.provider}-${hash(task.nativeId)}`;
   return task;
 }

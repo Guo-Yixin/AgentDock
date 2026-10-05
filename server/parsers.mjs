@@ -1,9 +1,10 @@
+import {consumeUsage} from './usage.mjs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 
 export const hash = value => createHash('sha256').update(value).digest('hex').slice(0, 24);
-export const PARSER_VERSION = 5;
+export const PARSER_VERSION = 7;
 export function epoch(value, fallback = 0) {
   if (typeof value === 'number') return value < 1e11 ? value * 1000 : value;
   const result = Date.parse(value); return Number.isFinite(result) ? result : fallback;
@@ -85,6 +86,7 @@ export function consumeCodex(task, record, evidence) {
     const origin = String(item.originator || item.thread_source || '');
     task.surface = /desktop|codex.app|daybreak/i.test(origin) ? '桌面' : /vscode|extension/i.test(source + origin) ? '编辑器' : /appserver/i.test(source) ? '桌面/服务' : /cli/i.test(source) ? 'CLI' : task.surface;
   }
+  consumeUsage(task,record,evidence,timestamp);
   if (record.type === 'response_item') {
     if (item.type === 'message' && item.channel !== 'analysis') {message(task, item.role, contentText(item.content), timestamp, evidence);if(item.channel==='commentary')task.activity='recent';}
     if (item.type === 'function_call') tool(task, item.name || '未命名工具', item.arguments, timestamp, evidence);
@@ -103,6 +105,7 @@ export function consumeClaude(task, record, evidence) {
   if (record.sessionId) { task.nativeId = task.subagentId ? `${record.sessionId}/subagent/${task.subagentId}` : record.sessionId; task.id = `claude-${hash(task.nativeId)}`; if (task.subagentId) task.parentNativeId = record.sessionId; }
   task.cwd = record.cwd || task.cwd;
   if (record.entrypoint) task.surface = task.subagentId ? '子代理' : /vscode|ide/i.test(record.entrypoint) ? '编辑器' : /desktop/i.test(record.entrypoint) ? '桌面' : 'CLI';
+  consumeUsage(task,record,evidence,timestamp);
   if (record.type === 'custom-title') task.title = String(record.customTitle || record.title || task.title).slice(0, 180);
   if (record.type === 'user' && !record.isMeta) {
     const content = record.message?.content;
@@ -133,6 +136,7 @@ export function cursorTask(header, body, file) {
   const conversation = body?.conversationMap || {};
   const entries = Array.isArray(conversation) ? conversation : Object.values(conversation);
   for (const entry of entries) {
+    consumeUsage(task,entry,{...evidence,locator:`${evidence.locator};bubbleId=${entry.bubbleId||entry.id||'?'}`},epoch(entry.timestamp||entry.createdAt,task.updatedAt));
     if (entry.toolFormerData || entry.grouping?.toolCallId || entry.grouping?.hasThinking || entry.capabilityType === 30) continue;
     const role = entry.role || (entry.type === 1 || entry.type === 'user' ? 'user' : entry.type === 2 || entry.type === 'assistant' ? 'assistant' : '');
     const text = contentText(entry.text || entry.content || entry.message?.content);
