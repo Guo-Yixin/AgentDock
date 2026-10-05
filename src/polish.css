@@ -564,6 +564,21 @@ option {
   height: 44px;
   padding: 9px 12px;
   border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  border-color: var(--border);
+  caret-color: var(--text);
+}
+.auth-card .field-label input:focus {
+  border-color: var(--mint);
+}
+.auth-card .field-label input::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+.auth-card .field-label input:is(:-webkit-autofill, :autofill) {
+  box-shadow: 0 0 0 1000px var(--panel) inset;
+  -webkit-text-fill-color: var(--text);
 }
 .auth-card .primary-button {
   display: flex;

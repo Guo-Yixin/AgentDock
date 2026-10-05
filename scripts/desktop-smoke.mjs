@@ -1,7 +1,8 @@
 import {spawn,execFileSync} from 'node:child_process';
 import electronExe from 'electron';
 import {_electron,expect} from '@playwright/test';
-import {mkdir} from 'node:fs/promises';
+import {mkdir,readFile} from 'node:fs/promises';
+const version=JSON.parse(await readFile(new URL('../package.json',import.meta.url),'utf8')).version;
 import path from 'node:path';
 process.env.NO_PROXY=[process.env.NO_PROXY,'127.0.0.1','localhost'].filter(Boolean).join(',');
 const data=path.resolve('artifacts/desktop-test',String(Date.now()));await mkdir(data,{recursive:true});
@@ -18,7 +19,7 @@ try{
  const security=await desktop.evaluate(({BrowserWindow})=>{const p=BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences();return {sandbox:p.sandbox,contextIsolation:p.contextIsolation,nodeIntegration:p.nodeIntegration};});
  expect(security).toEqual({sandbox:true,contextIsolation:true,nodeIntegration:false});
  expect((await fetch(url+'/api/health')).status).toBe(403);
- expect((await window.evaluate(async()=> (await fetch('/api/health')).json())).version).toBe('0.4.0');
+ expect((await window.evaluate(async()=> (await fetch('/api/health')).json())).version).toBe(version);
  await window.getByRole('button',{name:'查看演示体验',exact:true}).click();await expect(window.getByText(/演示模式 · 所有任务/)).toBeVisible();
  await window.getByLabel('界面主题').selectOption('dark');await expect(window.locator('html')).toHaveAttribute('data-theme','dark');
  await expect.poll(()=>window.locator('.task-row').first().evaluate(el=>getComputedStyle(el).backgroundColor)).toBe('rgb(17, 30, 46)');await window.screenshot({path:'artifacts/screenshots/desktop-smoke.png',animations:'disabled'});

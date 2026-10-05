@@ -4,7 +4,7 @@
 
 ## 0.4 登录、主题与用量审计
 
-网页版与桌面端共享冰蓝浅色、午夜深蓝和青绿状态光。修复浅色筛选器及本机提示卡的黑底/低对比度问题，补充轨道线、渐变卡片、纵向待处理条目、快捷操作（Ctrl / ⌘ + Shift + P）和“只看关注”筛选。主题支持跟随系统与减少动态效果。
+网页版与桌面端共享冰蓝浅色、午夜深蓝和青绿状态光。修复浅色筛选器及本机提示卡的黑底/低对比度问题，补充轨道线、渐变卡片、纵向待处理条目、快捷操作（Ctrl / ⌘ + Shift + P）和“只看关注”筛选。登录输入框及自动填充使用当前主题的底色与文字颜色。主题支持跟随系统与减少动态效果。
 
 - **登录与账号中心**：连接 MySQL 后首次创建自己的所有者账号；登录后才能读取任务、来源目录、报告、配置、助手与用量。可编辑显示名称、修改密码、退出登录和吊销其他会话。密码以随机盐 scrypt 哈希保存，登录令牌在数据库中只存 SHA-256，前端不保存密码或令牌；Cookie 为 HttpOnly / SameSite=Strict。默认登录 8 小时，可选择 7 天。修改密码使所有登录会话失效。当前为单所有者工作空间，不提供公共注册或多租户数据隔离。
 - **用量审计**：提供累计用量、单日峰值、活跃/连续记录天数、年度热力图、输入/缓存读取/缓存写入/输出堆叠图、每日估算费用与工具/模型对比；支持时间、工具、模型和项目筛选、分页证据与 CSV 汇总导出。顶部历史统计与热力图使用全部保留历史，明细和费用使用所选日期范围。
@@ -25,7 +25,7 @@
 
 ## Windows 桌面测试版
 
-安装包 `AgentDock-0.4.0-windows-x64.exe` 由 [GitHub 自动检查](https://github.com/Guo-Yixin/AgentDock/actions/workflows/ci.yml) 构建，进入成功运行的 Artifacts 下载 `AgentDock-windows-x64`（需登录 GitHub，保留 14 天）。公开正式版本在 [Releases](https://github.com/Guo-Yixin/AgentDock/releases)；没有更新时不会自动下载或安装。
+安装包 `AgentDock-0.4.1-windows-x64.exe` 由 [GitHub 自动检查](https://github.com/Guo-Yixin/AgentDock/actions/workflows/ci.yml) 构建，进入成功运行的 Artifacts 下载 `AgentDock-windows-x64`（需登录 GitHub，保留 14 天）。公开正式版本在 [Releases](https://github.com/Guo-Yixin/AgentDock/releases)；没有更新时不会自动下载或安装。
 
 - 当前用户安装，无需管理员权限。捆绑 SHA-256 校验的官方 Node.js 24.21.0，无需另装 Node.js；**仍需自行准备并配置 MySQL**。
 - 关闭窗口隐藏到托盘；托盘可打开窗口、暂停/恢复采集或退出。退出仅停止本应用启动的后端。服务异常会尝试恢复，也可手动重试。
