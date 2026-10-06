@@ -55,7 +55,7 @@ app.get('/api/account/sessions',async req=>rpc('authAccount',{token:cookieToken(
 app.post('/api/account/revoke',async req=>{const result=await rpc('authAccount',{token:cookieToken(req),action:'revoke'});for(const stream of [...streams,...modelStreams])if(stream.authToken!==cookieToken(req))stream.end();return result;});
 app.patch('/api/account/profile',{schema:body({displayName:str(100)},['displayName'])},async req=>rpc('authAccount',{token:cookieToken(req),action:'profile',...req.body}));
 app.post('/api/account/password',{schema:body({currentPassword:str(128),password:{type:'string',minLength:6,maxLength:128}},['currentPassword','password'])},async(req,reply)=>{throttle(req);const result=await authRPC('authAccount',{token:cookieToken(req),action:'password',...req.body});setCookie(reply);for(const stream of [...streams,...modelStreams])stream.end();return result;});
-app.get('/api/health',async()=>({ok:!workerError,version:'0.5.0',database:await rpc('health')}));
+app.get('/api/health',async()=>({ok:!workerError,version:'0.6.0',database:await rpc('health')}));
 app.get('/api/settings',async req=>{const settings=publicSettings();return {...settings,...(!req.account?{sources:[],hasKey:false,keyFromEnv:true}:{}),health:await rpc('health')};});
 app.post('/api/settings/database/test',{schema:dbSchema},async req=>testDatabase(candidate(req.body)));
 app.post('/api/settings/database',{schema:dbSchema},async req=>{
@@ -77,7 +77,7 @@ app.post('/api/migration',async()=>rpc('migrate',null,180000));
 app.post('/api/settings/model',{schema:body({key:str(4096),model:str(100)},[])},async req=>{if(req.body.key!==undefined&&!req.body.key.trim())throw new Error('API Key 不能为空');const s=loadSettings();if(req.body.key)s.keyEncrypted=protect(req.body.key.trim());if(req.body.model)s.model=req.body.model;saveSettings(s);return publicSettings(s);});
 app.delete('/api/settings/model/key',async()=>{const s=loadSettings();delete s.keyEncrypted;saveSettings(s);return publicSettings(s);});
 app.post('/api/settings/model/test',{schema:body({key:str(4096)})},async req=>({models:await modelClient(req.body.key).models()}));
-app.get('/api/diagnostics',async()=>{const health=await rpc('health'),o=await rpc('overview');return {version:'0.5.0',platform:process.platform,database:{configured:health.configured,connected:health.connected,reportIssue:health.reportIssue},sources:o.sources.map(s=>({id:s.id,state:s.state,retained:s.count,discovered:s.discoveredCount??null,syncAt:s.syncAt}))};});
+app.get('/api/diagnostics',async()=>{const health=await rpc('health'),o=await rpc('overview');return {version:'0.6.0',platform:process.platform,database:{configured:health.configured,connected:health.connected,reportIssue:health.reportIssue},sources:o.sources.map(s=>({id:s.id,state:s.state,retained:s.count,discovered:s.discoveredCount??null,syncAt:s.syncAt}))};});
 app.get('/api/sources/discover',()=>discoverSources());
 app.post('/api/sources/:id/validate',{schema:body({root:str(4096)},['root'])},async req=>{if(!discoverSources().some(s=>s.id===req.params.id))throw new Error('未知来源');return validateSource(req.params.id,req.body.root);});
 app.patch('/api/sources/:id',{schema:body({root:str(4096),enabled:boolean})},async req=>{if(!discoverSources().some(s=>s.id===req.params.id))throw new Error('未知来源');const s=loadSettings();s.sources||={};const old=s.sources[req.params.id]||{};s.sources[req.params.id]={...old,...req.body};if(req.body.root){const v=await validateSource(req.params.id,req.body.root);if(v.message.includes('安装目录')||v.message.includes('不能填写'))throw new Error(v.message);}await rpc('sources',discoverSources(s));saveSettings(s);return discoverSources(s);});
@@ -116,6 +116,18 @@ app.get('/api/reports/:id',async(req,reply)=>(await rpc('reportGet',req.params.i
 app.patch('/api/reports/:id',{schema:body({userText:str(64000)},['userText'])},async req=>rpc('reportPatch',{id:req.params.id,...req.body}));
 app.post('/api/reports/:id/analysis',{schema:body({chatId:str(128)},['chatId'])},async req=>{const chat=await rpc('chatGet',req.body.chatId);const message=chat?.messages.filter(m=>m.role==='assistant'&&m.status==='complete').at(-1);if(!message)throw new Error('请先完成助手分析');return rpc('reportAI',{id:req.params.id,text:message.text,model:message.model,usage:message.usage});});
 app.get('/api/reports/:id/export',async(req,reply)=>markdown(reply,await rpc('reportExport',req.params.id),'agentdock-report.md'));
+const studioRef={type:'object',additionalProperties:false,properties:{type:{type:'string',enum:['task','project','report','schedule','goal','memory','workflow']},id:str(128)},required:['type','id']};
+const studioRefs={type:'array',maxItems:20,items:studioRef};
+const studioQuery={querystring:{type:'object',additionalProperties:false,properties:{q:str(200),status:str(32),project:str(128),due:boolean,page:{type:'integer',minimum:1,maximum:100000}}}};
+app.get('/api/memories',{schema:studioQuery},async req=>rpc('studioList',{...req.query,kind:'memory'}));
+app.get('/api/memories/:id',async(req,reply)=>await rpc('studioGet',{kind:'memory',id:req.params.id})||reply.code(404).send({error:'记忆不存在'}));
+app.post('/api/memories',{schema:body({id:str(128),version:integer,title:str(200),text:str(),category:{type:'string',enum:['decision','pattern','pitfall','preference']},status:{type:'string',enum:['draft','verified','archived']},tags:{type:'array',maxItems:8,items:str(30)},projectId:str(128),refs:studioRefs},['title','text','category','status'])},async req=>rpc('memoryPut',req.body));
+app.post('/api/memories/:id/review',{schema:body({version:integer,days:{type:'integer',enum:[1,7,30]}},['version'])},async req=>rpc('memoryReview',{...req.body,id:req.params.id}));
+app.get('/api/workflows/templates',async()=>rpc('studioTemplates'));
+app.get('/api/workflows',{schema:studioQuery},async req=>rpc('studioList',{...req.query,kind:'workflow'}));
+app.get('/api/workflows/:id',async(req,reply)=>await rpc('studioGet',{kind:'workflow',id:req.params.id})||reply.code(404).send({error:'工作流不存在'}));
+app.post('/api/workflows',{schema:body({title:str(200),templateId:str(32),projectId:str(128),refs:studioRefs},['templateId'])},async req=>rpc('workflowPut',req.body));
+app.post('/api/workflows/:id/step',{schema:body({version:integer,step:{type:'integer',minimum:0,maximum:10},note:str(),archive:boolean},['version'])},async req=>rpc('workflowStep',{...req.body,id:req.params.id}));
 app.get('/api/schedules',async()=>rpc('schedules'));
 app.post('/api/schedules',{schema:body({id:str(128),title:str(200),note:str(),start:integer,end:integer,allDay:boolean,projectId:str(128),taskId:str(128),done:boolean,reminderMinutes:{type:'integer',enum:[0,5,15,30,60,1440]}},['title','start','end'])},async req=>rpc('schedulePut',req.body));
 app.delete('/api/schedules/:id',async req=>rpc('scheduleDelete',req.params.id));
@@ -125,7 +137,7 @@ app.post('/api/reminders/:id/ack',{schema:body({claim:str(128)})},async req=>rpc
 app.post('/api/collection/pause',{schema:body({paused:boolean},['paused'])},async req=>rpc('pause',req.body.paused));
 app.post('/api/reports/refresh',async()=>rpc('reportRefresh'));
 app.get('/api/calendar',{schema:{querystring:{type:'object',properties:{start:integer,end:integer,project:str(128),provider:str(32)},required:['start','end']}}},async req=>{if(req.query.end<=req.query.start||req.query.end-req.query.start>62*86400000)throw new Error('请查询最多 62 天的有效范围');return {days:await rpc('activityDays',req.query),events:await rpc('events',req.query),schedules:await rpc('schedules')};});
-app.post('/api/assistant/context',{schema:body({refs:{type:'array',minItems:1,maxItems:40,items:{type:'object',additionalProperties:false,properties:{id:str(128),type:{type:'string',enum:['task','project','report','schedule','goal']},includeTranscript:boolean,branchId:str(128)},required:['id','type']}},range:{type:'object',additionalProperties:false,properties:{start:integer,end:integer}}},['refs'])},async req=>{const preview=await rpc('context',req.body);const c=mysqlConfig();const safe=sealPreview(preview,[modelKey(),c?.password]);await rpc('previewSave',safe);return safe;});
+app.post('/api/assistant/context',{schema:body({refs:{type:'array',minItems:1,maxItems:40,items:{type:'object',additionalProperties:false,properties:{id:str(128),type:{type:'string',enum:['task','project','report','schedule','goal','memory','workflow']},includeTranscript:boolean,branchId:str(128)},required:['id','type']}},range:{type:'object',additionalProperties:false,properties:{start:integer,end:integer}}},['refs'])},async req=>{const preview=await rpc('context',req.body);const c=mysqlConfig();const safe=sealPreview(preview,[modelKey(),c?.password]);await rpc('previewSave',safe);return safe;});
 app.get('/api/assistant/chats',async()=>rpc('chats'));
 app.get('/api/assistant/chats/:id',async(req,reply)=>(await rpc('chatGet',req.params.id))||reply.code(404).send({error:'聊天不存在'}));
 app.delete('/api/assistant/chats/:id',async req=>rpc('chatDelete',req.params.id));

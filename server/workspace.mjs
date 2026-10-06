@@ -70,7 +70,7 @@ export async function buildContext(store, refs, range = {}) {
   if(range.start!==undefined&&range.end!==undefined&&range.end<=range.start)throw new Error('上下文日期范围无效');
   const sources = [], parts = [];
   for (const ref of refs) {
-    if (!['task', 'project', 'report', 'schedule','goal'].includes(ref.type) || typeof ref.id !== 'string') throw new Error('上下文对象无效');
+    if (!['task', 'project', 'report', 'schedule','goal','memory','workflow'].includes(ref.type) || typeof ref.id !== 'string') throw new Error('上下文对象无效');
     let text = '', title = '', evidence = null;
     if(ref.type==='goal'){const goal=await goalGet(store,ref.id);if(!goal)throw new Error('目标不存在');title=goal.title;text=JSON.stringify({title,status:goal.status,description:goal.description,note:goal.note,sessions:goal.sessions.map(t=>({id:t.id,title:t.title,summary:t.annotation.summaryOverride||t.summary,todos:t.todos,note:t.annotation.note,evidence:t.summaryEvidence||t.evidence}))});}
     else if (ref.type === 'task') {
@@ -87,6 +87,7 @@ export async function buildContext(store, refs, range = {}) {
       text = texts.join('\n');
     }
     if (ref.type === 'report' || ref.type === 'schedule') { const d = await store.document(ref.id, ref.type); if (!d) throw new Error('所选对象不存在'); title = d.title; text = ref.type === 'report' ? reportMarkdown(d) : JSON.stringify({ title, note: d.note, start: d.start, end: d.end, done: d.done }); }
+    if (ref.type === 'memory' || ref.type === 'workflow') { const d = await store.document(ref.id, ref.type); if (!d || d.status === 'archived') throw new Error('所选记忆或工作流不存在或已归档'); title = d.title; text = JSON.stringify(ref.type === 'memory' ? {title, text:d.text, category:d.category, status:d.status, reviewedAt:d.reviewedAt, refs:d.refs} : {title, status:d.status, steps:d.steps, refs:d.refs}); }
     const number = sources.length + 1; sources.push({ ...ref, number, title, evidence }); parts.push(`[${number}] ${title}\n${text}`);
   }
   const text = parts.join('\n\n'); if (text.length > 48000) throw new Error('上下文超过 48000 字符，请缩小范围或取消正文');

@@ -10,7 +10,38 @@ import { generateReport,migrateLegacy,buildContext } from '../server/workspace.m
 import { testStore } from './mysql-helper.mjs';
 import {createOwner,login,authStatus,account} from '../server/auth.mjs';
 import {saveUsage,usageOverview,usageRecords,validatePrice} from '../server/usage.mjs';
+import {memoryPut,memoryReview,studioList,workflowPut,workflowStep} from '../server/studio.mjs';
 const enabled=process.env.AGENTDOCK_INTEGRATION==='true';
+test('MySQL: 记忆、工作流、上下文闭环与并发保护',{skip:!enabled},async()=>{
+ const {store,config}=await testStore('agentdock_test_studio');let closed=false;
+ try {
+  const t=finalize(emptyTask('codex','studio-task','synthetic-studio.jsonl',{title:'可复用交付经验',summary:'测试通过后确认',updatedAt:Date.now()}));await store.upsert(t);
+  const m=await memoryPut(store,{title:'中文经验😀',text:'原始回复需核实',category:'pattern',status:'draft',tags:['验证'],projectId:t.projectId,refs:[{type:'task',id:t.id}]});
+  assert.equal(m.status,'draft');assert.equal(m.refs[0].title,t.title);assert.equal(m.reviewAt,null);
+  await assert.rejects(memoryReview(store,{id:m.id,version:1}),/已确认/);
+  const verified=await memoryPut(store,{...m,status:'verified',version:1});assert.equal(verified.version,2);assert.ok(verified.reviewAt>Date.now());
+  await assert.rejects(memoryPut(store,{...m,text:'过时编辑'}),/已更新/);
+  const results=await Promise.allSettled([memoryReview(store,{id:m.id,version:2,days:1}),memoryReview(store,{id:m.id,version:2,days:30})]);assert.equal(results.filter(r=>r.status==='fulfilled').length,1);
+  assert.equal((await studioList(store,{kind:'memory',q:'中文',status:'verified'})).total,1);
+  const before=await store.document(m.id,'memory');await store.putDocument('memory',{...before,reviewAt:Date.now()-1});assert.equal((await studioList(store,{kind:'memory',due:true})).total,1);
+  const run=await workflowPut(store,{templateId:'delivery',title:'测试交付',refs:[{type:'memory',id:m.id},{type:'task',id:t.id}]});
+  await assert.rejects(workflowStep(store,{id:run.id,version:1,step:1,note:'跳步'}),/顺序/);await assert.rejects(workflowStep(store,{id:run.id,version:1,step:0,note:''}),/结论/);
+  const advances=await Promise.allSettled([workflowStep(store,{id:run.id,version:1,step:0,note:'目标与来源已核对'}),workflowStep(store,{id:run.id,version:1,step:0,note:'另一个窗口'})]);assert.equal(advances.filter(r=>r.status==='fulfilled').length,1);
+  let active=await store.document(run.id,'workflow');for(let step=1;step<4;step++)active=await workflowStep(store,{id:run.id,version:active.version,step,note:`第 ${step} 步已验证`});assert.equal(active.status,'completed');assert.ok(active.steps.every(s=>s.completedAt));assert.notEqual((await store.get(t.id)).completion,'done');
+  const preview=await buildContext(store,[{type:'memory',id:m.id},{type:'workflow',id:run.id}]);assert.match(preview.text,/目标与来源已核对|另一个窗口/);assert.match(preview.text,/verified/);assert.equal(preview.sources[0].id,m.id);
+  const archive=await memoryPut(store,{...await store.document(m.id,'memory'),status:'archived'});assert.equal((await studioList(store,{kind:'memory'})).total,0);await assert.rejects(buildContext(store,[{type:'memory',id:archive.id}]),/归档/);
+  await assert.rejects(memoryPut(store,{title:'非法来源',text:'样本',status:'draft',category:'pattern',refs:[{type:'task',id:'missing'}]}),/不存在/);
+  assert.equal((await studioList(store,{kind:'memory',status:'archived'})).total,1);
+  await store.close();closed=true;const reopened=await openStore(config);try{assert.equal((await reopened.document(run.id,'workflow')).status,'completed');assert.equal((await reopened.document(m.id,'memory')).text,'原始回复需核实');}finally{await reopened.close();}
+ }finally{if(!closed)await store.close();}
+});
+test('MySQL: 记忆分页、脱敏与工作流归档',{skip:!enabled},async()=>{
+ const {store}=await testStore('agentdock_test_studio_pages');try{
+  for(let i=0;i<32;i++)await memoryPut(store,{title:`经验 ${i}`,text:'api_key: sk-syntheticsecretabcdefgh',category:'pitfall',status:'draft',tags:[],refs:[]});
+  const first=await studioList(store,{kind:'memory'}),second=await studioList(store,{kind:'memory',page:2});assert.equal(first.items.length,30);assert.equal(second.items.length,2);assert.equal(first.total,32);assert.ok(!first.items.some(m=>m.text.includes('sk-syntheticsecret')));assert.equal(new Set([...first.items,...second.items].map(m=>m.id)).size,32);
+  const r=await workflowPut(store,{templateId:'review',refs:[]});await workflowStep(store,{id:r.id,version:r.version,archive:true});assert.equal((await studioList(store,{kind:'workflow'})).total,0);assert.equal((await studioList(store,{kind:'workflow',status:'archived'})).total,1);
+ }finally{await store.close();}
+});
 test('MySQL: 账号初始化竞态、会话吊销和修改密码不泄露哈希',{skip:!enabled},async()=>{
  const {store,config}=await testStore('agentdock_test_auth');try{
  assert.equal(await canInitialize(config),true);

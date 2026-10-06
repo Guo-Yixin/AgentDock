@@ -22,7 +22,9 @@ try{
  expect((await window.evaluate(async()=> (await fetch('/api/health')).json())).version).toBe(version);
  await window.getByRole('button',{name:'查看演示体验',exact:true}).click();await expect(window.getByText(/演示模式 · 所有任务/)).toBeVisible();
  await window.getByLabel('界面主题').selectOption('dark');await expect(window.locator('html')).toHaveAttribute('data-theme','dark');
- await expect.poll(()=>window.locator('.task-row').first().evaluate(el=>getComputedStyle(el).backgroundColor)).toBe('rgb(17, 30, 46)');await window.screenshot({path:'artifacts/screenshots/desktop-smoke.png',animations:'disabled'});
+ await expect.poll(()=>window.locator('.task-row').first().evaluate(el=>getComputedStyle(el).backgroundColor===getComputedStyle(document.querySelector('.topbar')).backgroundColor)).toBe(true);await window.screenshot({path:'artifacts/screenshots/desktop-smoke.png',animations:'disabled'});
+ await window.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'记忆库',exact:true}).click();await window.getByRole('button',{name:'新建记忆',exact:true}).click();await window.getByLabel('记忆标题').fill('桌面演示记忆');await window.getByLabel('记忆内容').fill('桌面与网页使用同一套交互');await window.getByRole('button',{name:'保存记忆',exact:true}).click();await expect(window.locator('.studio-item').filter({hasText:'桌面演示记忆'})).toBeVisible();
+ await window.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'工作流',exact:true}).click();await window.getByRole('button',{name:'启动工作流',exact:true}).click();await window.getByRole('button',{name:'确认启动'}).click();await window.getByLabel('工作流步骤结论').fill('桌面步骤验收通过');await window.getByRole('button',{name:'确认本步'}).click();await expect(window.locator('.workflow-step').first()).toContainText('桌面步骤验收通过');await window.screenshot({path:'artifacts/screenshots/desktop-workflow.png',animations:'disabled'});
  await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].close());
  expect(await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].isVisible())).toBe(false);
  expect((await window.evaluate(async()=> (await fetch('/api/health')).json())).ok).toBe(true);
@@ -32,5 +34,5 @@ try{
 
  await desktop.close();desktop=null;
  await expect.poll(async()=>{try{await fetch(url+'/api/health',{signal:AbortSignal.timeout(1000)});return false;}catch{return true;}},{timeout:10000}).toBe(true);
- console.log('桌面沙箱、会话认证、演示、主题、单实例、故障恢复、托盘隐藏与独立服务退出验证通过');
+ console.log('桌面沙箱、会话认证、演示、主题、记忆工作流、单实例、故障恢复、托盘隐藏与独立服务退出验证通过');
 }finally{await desktop?.close();}

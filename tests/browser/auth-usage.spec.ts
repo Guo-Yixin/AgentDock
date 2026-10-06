@@ -155,7 +155,7 @@ test("浅色组件无黑底、快捷操作与关注筛选可用", async ({ page 
       color: getComputedStyle(el).color,
       background: getComputedStyle(el).backgroundImage,
     }));
-  expect(note.color).toBe("rgb(22, 44, 62)");
+  expect(note.color).toBe(await page.locator(".main").evaluate(el=>getComputedStyle(el).color));
   expect(note.background).not.toContain("rgb(16, 30, 30)");
   const pin = page.getByRole("button", { name: /^关注：/ }).first();
   await pin.click();

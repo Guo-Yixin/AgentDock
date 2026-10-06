@@ -30,6 +30,8 @@ export function QuickActions({
   const actions = [
     ["工作台", "回到今日进展", "overview"],
     ["工作目标", "查看跨工具工作目标", "goals"],
+    ["记忆库", "沉淀、复查与复用工作经验", "memories"],
+    ["工作流", "逐步完成交付、诊断和复盘", "workflows"],
     ["历史记录", "搜索全部保留会话", "history"],
     ["用量审计", "查看跨工具 Token 与估算费用", "usage"],
     ["报告中心", "生成日报或周报", "reports"],

@@ -2,6 +2,17 @@
 
 本地 AI 编程任务指挥台：汇总 Codex、Claude Code、Cursor、Pi、DeepSeek Harness 和 WorkBuddy 的会话，按项目整理进展、日报与周报，并提供日历日程和带来源的分析助手。
 
+## 0.6 记忆、工作流与交互
+
+新增 **记忆库** 与 **工作流**，让工作记录能帮助下一次行动。视觉参考 [TechSpar](https://github.com/AnnaSuSu/TechSpar) 的分层表面和功能卡片，独立实现中性底色、琥珀色操作强调、青绿状态与柔和局部光晕，统一网页和桌面端的浅色 / 深色表单与导航。
+
+- **记忆库**：从会话摘要、报告或助手回答生成本地草稿，保留来源；支持决策、经验、避坑、偏好分类、标签、项目、搜索分页、人工确认、归档与 Markdown 导出。已确认记忆默认 7 天复查，可设置 1 / 7 / 30 天后的下次复查，首页显示待复查数量。
+- **引导式工作流**：跨工具交付、阻塞诊断、每周复盘三个模板，关联会话、目标、报告和记忆；每步记录结论后手动确认，支持中断后继续。工作流完成不自动确认关联任务，不执行 IDE 命令。
+- **上下文闭环**：将当前工作流与记忆带入助手，预览后才发送 DeepSeek；复盘结论可生成记忆草稿，或转成待编辑的跟进日程。草稿与 AI 建议均需用户核实，归档对象不加入模型上下文。
+- **持久化与冲突**：复用 MySQL `ad_documents`、Worker 和 SSE，版本校验避免多窗口静默覆盖；真实采集不会覆盖记忆编辑或步骤结论。演示在前端内存运行，不连接数据库与模型，刷新后重置。
+
+操作路径与边界见 [记忆与工作流设计](docs/memory-workflows.md)。当前不提供自动记忆注入、向量检索、后台执行或多用户隔离。
+
 ## 0.4 登录、主题与用量审计
 
 网页版与桌面端共享冰蓝浅色、午夜深蓝和青绿状态光。修复浅色筛选器及本机提示卡的黑底/低对比度问题，补充轨道线、渐变卡片、纵向待处理条目、快捷操作（Ctrl / ⌘ + Shift + P）和“只看关注”筛选。登录输入框及自动填充使用当前主题的底色与文字颜色。主题支持跟随系统与减少动态效果。
@@ -25,7 +36,7 @@
 
 ## Windows 桌面测试版
 
-安装包 `AgentDock-0.5.0-windows-x64.exe` 由 [GitHub 自动检查](https://github.com/Guo-Yixin/AgentDock/actions/workflows/ci.yml) 构建，进入成功运行的 Artifacts 下载 `AgentDock-windows-x64`（需登录 GitHub，保留 14 天）。公开正式版本在 [Releases](https://github.com/Guo-Yixin/AgentDock/releases)；没有更新时不会自动下载或安装。
+安装包 `AgentDock-0.6.0-windows-x64.exe` 由 [GitHub 自动检查](https://github.com/Guo-Yixin/AgentDock/actions/workflows/ci.yml) 构建，进入成功运行的 Artifacts 下载 `AgentDock-windows-x64`（需登录 GitHub，保留 14 天）。公开正式版本在 [Releases](https://github.com/Guo-Yixin/AgentDock/releases)；没有更新时不会自动下载或安装。
 
 - 当前用户安装，无需管理员权限。捆绑 SHA-256 校验的官方 Node.js 24.21.0，无需另装 Node.js；**仍需自行准备并配置 MySQL**。
 - 关闭窗口隐藏到托盘；托盘可打开窗口、暂停/恢复采集或退出。退出仅停止本应用启动的后端。服务异常会尝试恢复，也可手动重试。
