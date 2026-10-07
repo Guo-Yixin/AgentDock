@@ -1,3 +1,4 @@
+import {Screens,Pane,Steps,useSection,useListSize,useQueryFields} from './Screen';
 import {PriceCatalogue} from './PriceCatalogue';
 import {AvatarContent} from './Avatar';
 import {ManualUsage} from './ManualUsage';
@@ -183,16 +184,12 @@ export default function UsagePage({
   revision: number;
   openTask: (id: string) => void;
 }) {
+  const [priceTab,setPriceTab]=useSection('价格','fees');const listSize=useListSize();
+  const [filters,updateFilters]=useQueryFields('usage',{scope:'lifetime',range:'30',start:offsetDate(29),end:today(),provider:'',model:'',project:'',page:'1'});
+  const {scope,range,start,end,provider,model,project}=filters,page=Math.max(1,Number(filters.page)||1);
+  const setScope=(scope:string)=>updateFilters({scope}),setStart=(start:string)=>updateFilters({start,page:'1'}),setEnd=(end:string)=>updateFilters({end,page:'1'}),setProvider=(provider:string)=>updateFilters({provider,page:'1'}),setModel=(model:string)=>updateFilters({model,page:'1'}),setProject=(project:string)=>updateFilters({project,page:'1'}),setPage=(page:number)=>updateFilters({page:String(page)});
   const { user } = useAccount(),
-    [scope, setScope] = useState("lifetime"),
     [includeHistory, setIncludeHistory] = useState(true),
-    [range, setRange] = useState("30"),
-    [start, setStart] = useState(offsetDate(29)),
-    [end, setEnd] = useState(today()),
-    [provider, setProvider] = useState(""),
-    [model, setModel] = useState(""),
-    [project, setProject] = useState(""),
-    [page, setPage] = useState(1),
     [data, setData] = useState<Usage>(),
     [records, setRecords] = useState<{ total: number; records: UsageRecord[] }>(
       { total: 0, records: [] },
@@ -226,8 +223,8 @@ export default function UsagePage({
         setSelected(undefined);
       }
       if (e.key === "Tab") {
-        e.preventDefault();
-        close?.focus();
+        const controls=Array.from(evidenceRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled),input,select')||[]).filter(el=>el.getClientRects().length>0),first=controls[0],last=controls.at(-1);
+        if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus();}
       }
     };
     window.addEventListener("keydown", key);
@@ -242,7 +239,7 @@ export default function UsagePage({
     provider,
     model,
     project,
-    page: String(page), pageSize:"5",
+    page: String(page), pageSize:String(listSize),
   }).toString();
   const [refresh, setRefresh] = useState(0);
   useEffect(() => {
@@ -274,12 +271,7 @@ export default function UsagePage({
     return () => controller.abort();
   }, [params, demo, revision, refresh]);
   function period(value: string) {
-    setRange(value);
-    if (value !== "custom") {
-      setStart(offsetDate(Number(value) - 1));
-      setEnd(today());
-    }
-    setPage(1);
+    updateFilters(value==='custom'?{range:value,page:'1'}:{range:value,start:offsetDate(Number(value)-1),end:today(),page:'1'});
   }
   async function savePrice(e: React.FormEvent) {
     e.preventDefault();
@@ -371,51 +363,8 @@ export default function UsagePage({
           导出汇总 CSV
         </button>
       </div>
-      <p className="muted usage-caption">
-        跨工具用量，逐条有据。按 Asia/Shanghai
-        自然日统计；日志实测与手动补录分别展示。
-      </p>
-      {error && (
-        <p className="error-banner" role="alert">
-          {error}
-        </p>
-      )}
-      <section className="usage-profile source-panel">
-        <div className="usage-owner">
-          <span className="usage-avatar">
-            {demo?"D":<AvatarContent/>}
-          </span>
-          <div>
-            <h3>
-              {demo ? "演示工作空间" : user?.displayName || "个人工作空间"}
-            </h3>
-            <p>多智能体 · 本地可追溯 {demo && "· 合成演示数据"}</p>
-          </div>
-          <span className="usage-badge">
-            <ShieldCheck size={15} />
-            {historical?.total ? "实测 + 手动补录" : "已记录用量"}
-          </span>
-        </div>
-        <div className="usage-profile-stats">
-          {[
-            ["累计 Token", short(data?.profile.total || 0)],
-            ["实测单日峰值", short(data?.profile.peak || 0)],
-            ["实测活跃天数", fmt(data?.profile.activeDays || 0)],
-            ["实测最长连续", fmt(data?.profile.longest || 0) + " 天"],
-            ["实测当前连续", fmt(data?.profile.current || 0) + " 天"],
-          ].map(([label, value]) => (
-            <div key={label}>
-              <strong>{value}</strong>
-              <small>{label}</small>
-            </div>
-          ))}
-        </div>
-        <p className="muted">
-          累计为当前工具、模型与项目筛选下的全部历史，不受日期范围限制。已记录明细 {short(data?.profile.measuredTotal ?? data?.profile.total ?? 0)} + 手动补录 {short(historical?.total || 0)}；峰值、活跃与连续天数仅依据真实日志。
-        </p>
-      </section>
-      {data?.referenceBudgets&&<details className="source-panel"><summary>公开 API 价格预算 · 当前日期范围</summary><p className="muted">按当前公开标准价格换算的参考预算，区间反映上下文或峰谷等级。缺失缓存字段按普通输入；区间不是实际费用上下界。未套用历史价格、订阅额度、Fast/Batch、区域及平台附加费；与合同计价及来源账单独立，不能相加。无输入输出拆分的比例补录不计价。</p><Paged label="参考预算">{data.referenceBudgets.map(r=><div className="report-fact" key={r.provider+r.model}><strong>{names[r.provider]} · {r.model}</strong><p>{r.available?`${r.min?.toFixed(4)}–${r.max?.toFixed(4)} ${r.currency}`:r.reason}</p>{r.source&&<a href={r.source} target="_blank" rel="noreferrer">官方依据 ↗</a>}</div>)}</Paged></details>}<PriceCatalogue demo={demo} onApply={r=>{setPricing(true);setPrice({...price,provider:({'OpenAI':'codex','Anthropic':'claude','DeepSeek':'deepseek','Cursor 路由':'cursor','腾讯云':'workbuddy'} as Record<string,string>)[r.vendor]||price.provider,model:r.model,currency:r.currency,date:today(),input:String(r.input),output:String(r.output),cacheRead:String(r.cacheRead),cacheWrite:String(r.cacheWrite),cacheWriteLong:String(r.cacheWriteLong)});}}/><ManualUsage demo={demo} onSaved={()=>setRefresh(v=>v+1)}/>{!demo && <HistoryEditor history={historical} onSaved={()=>setRefresh(v=>v+1)}/> }
-      <div className="usage-filters">
+      {error&&<p className="error-banner" role="alert">{error}</p>}<p className="usage-filter-summary" title={[start,end,names[provider]||"全部工具",model||"全部模型"].join(" · ")}>{start} — {end} · {names[provider]||"全部工具"} · {model||"全部模型"}</p><Screens id="用量" initial="overview" choices={[{id:'filters',label:'筛选'},{id:'overview',label:'总览'},{id:'activity',label:'活动图表'},{id:'models',label:'工具与模型'},{id:'ledger',label:'明细'},{id:'supplement',label:'补录'},{id:'prices',label:'价格'},{id:'coverage',label:'覆盖说明'}]}>
+<Pane id="filters"><div className="usage-filters">
         <label>
           时间范围
           <select
@@ -484,7 +433,6 @@ export default function UsagePage({
             value={model}
             onChange={(e) => {
               setModel(e.target.value);
-              setPage(1);
             }}
           >
             <option value="">全部模型</option>
@@ -506,7 +454,6 @@ export default function UsagePage({
             value={project}
             onChange={(e) => {
               setProject(e.target.value);
-              setPage(1);
             }}
           >
             <option value="">全部项目</option>
@@ -520,23 +467,45 @@ export default function UsagePage({
         <button
           className="text-button"
           onClick={() => {
-            setProvider("");
-            setProject("");
-            setModel("");
-            period("30");
+            updateFilters({provider:"",project:"",model:"",range:"30",start:offsetDate(29),end:today(),page:"1"});
           }}
         >
           清除筛选
         </button>
-      </div>
-      {loading && (
-        <p className="muted" role="status">
-          正在读取用量索引…
+      </div></Pane><Pane id="overview"><Screens id="用量总览" choices={[{id:"profile",label:"累计用量"},{id:"period",label:"当前范围"}]}><Pane id="profile"><section className="usage-profile source-panel">
+        <div className="usage-owner">
+          <span className="usage-avatar">
+            {demo?"D":<AvatarContent/>}
+          </span>
+          <div>
+            <h3>
+              {demo ? "演示工作空间" : user?.displayName || "个人工作空间"}
+            </h3>
+            <p>多智能体 · 本地可追溯 {demo && "· 合成演示数据"}</p>
+          </div>
+          <span className="usage-badge">
+            <ShieldCheck size={15} />
+            {historical?.total ? "实测 + 手动补录" : "已记录用量"}
+          </span>
+        </div>
+        <div className="usage-profile-stats">
+          {[
+            ["累计 Token", short(data?.profile.total || 0)],
+            ["实测单日峰值", short(data?.profile.peak || 0)],
+            ["实测活跃天数", fmt(data?.profile.activeDays || 0)],
+            ["实测最长连续", fmt(data?.profile.longest || 0) + " 天"],
+            ["实测当前连续", fmt(data?.profile.current || 0) + " 天"],
+          ].map(([label, value]) => (
+            <div key={label}>
+              <strong>{value}</strong>
+              <small>{label}</small>
+            </div>
+          ))}
+        </div>
+        <p className="muted">
+          累计为当前工具、模型与项目筛选下的全部历史，不受日期范围限制。已记录明细 {short(data?.profile.measuredTotal ?? data?.profile.total ?? 0)} + 手动补录 {short(historical?.total || 0)}；峰值、活跃与连续天数仅依据真实日志。
         </p>
-      )}
-      {data && (
-        <>
-          <div className="usage-metrics">
+      </section></Pane><Pane id="period">{data&&<><div className="usage-metrics">
             {[
               [
                 Layers3,
@@ -571,8 +540,20 @@ export default function UsagePage({
                 </article>
               );
             })}
-          </div>
-          <section className="source-panel heatmap-panel">
+          </div></>}</Pane></Screens></Pane>
+<Pane id="coverage">{data&&<div className="explanation usage-disclosure">
+            <Info size={17} />
+            <p>
+              当前范围内保留 {data.coverage.totalSessions} 个 IDE 会话，其中{" "}
+              {data.coverage.measuredSessions} 个包含可解析用量。
+              {data.summary.incomplete} 条用量缺少输入或输出；
+              {data.summary.cacheUnknown}{" "}
+              条未报告缓存读取。缺失值不按零用量推断。Codex
+              累计值按增量去重；Claude/Pi 缓存输入合并；推理 token
+              是输出的子集，不重复相加。Pi
+              的所有已保留分支均计入实际发生的用量。
+            </p>
+          </div>}</Pane><Pane id="activity"><Screens id="活动图表" choices={[{id:'year',label:'年度热力图'},{id:'daily',label:'每日分布'}]}><Pane id="year">{data&&<section className="source-panel heatmap-panel">
             <div className="section-heading">
               <h3>
                 <Flame size={18} /> Token 活动
@@ -580,9 +561,7 @@ export default function UsagePage({
               <label className="muted"><input type="checkbox" checked={includeHistory} onChange={e=>setIncludeHistory(e.target.checked)}/> 显示手动补录 · 过去 365 天</label>
             </div>
             <Heatmap days={data.heatmap} estimates={includeHistory ? [...(historical?.days||[]),...(data.manualHeatmap||[])] : []} />
-          </section>
-          <div className="usage-charts">
-            <section className="source-panel">
+          </section>}</Pane><Pane id="daily">{data&&<section className="source-panel">
               <div className="section-heading">
                 <h3>每日 Token 分布</h3>
                 <span>
@@ -631,13 +610,115 @@ export default function UsagePage({
               <p className="muted">
                 输入总数包含缓存；紫色部分为生成日期的手动补录，无输入输出拆分，不计入费用。
               </p>
-            </section>
-            <section className="source-panel">
+            </section>}</Pane></Screens></Pane>
+<Pane id="models">{data&&<section className="source-panel usage-models">
+            <div className="section-heading">
+              <h3>工具与模型对比</h3>
+              <select aria-label="模型对比范围" value={scope} onChange={e=>setScope(e.target.value)}><option value="lifetime">全部历史（与累计一致）</option><option value="period">当前日期范围</option></select>
+            </div>
+            <p className="muted">青绿：明细记录（采集/精确补录） · 紫色：历史余额；模型分配并非平台账单。对比合计 {short(comparisonTotal)}。</p>
+            <Paged label="工具与模型">{combinedRows.map((t) => (
+              <div className="usage-model-row" key={t.provider + t.model}>
+                <div>
+                  <strong>{names[t.provider] || t.provider}</strong>
+                  <small>{t.model}</small>
+                </div>
+                <div className="model-bar">
+                  <i
+                    style={{
+                      width: `${comparisonTotal ? (t.measured / comparisonTotal) * 100 : 0}%`,
+                    }}
+                  />
+                  <i className="historical-bar" style={{width:`${comparisonTotal ? t.historical/comparisonTotal*100 : 0}%`}}/>
+                </div>
+                <div>
+                  <strong>{short(t.total)}</strong>
+                  <small>
+                    明细 {short(t.measured)} / 历史余额 {short(t.historical)}
+                    {t.measured>0 && <> · 输入 {short(t.input)} / 输出 {short(t.output)}</>}
+                  </small>
+                </div>
+              </div>
+            ))}</Paged>
+            {!combinedRows.length && (
+              <p className="muted">
+                没有可解析的用量记录。采集到明确 usage 字段后会出现在这里。
+              </p>
+            )}
+          </section>}</Pane><Pane id="ledger">{data&&<section className="source-panel usage-ledger">
+            <div className="section-heading">
+              <h3>
+                <Search size={18} /> 用量明细与依据
+              </h3>
+              <span>{records.total} 条</span>
+            </div>
+            <div className="usage-table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>时间 / 会话</th>
+                    <th>工具 / 模型</th>
+                    <th>输入</th>
+                    <th>缓存读取</th>
+                    <th>输出</th>
+                    <th>总 Token</th>
+                    <th>依据</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {records.records.map((r) => (
+                    <tr key={r.id}>
+                      <td>
+                        <button
+                          className="text-button"
+                          onClick={() =>
+                            r.provider === "agentdock"
+                              ? setSelected(r)
+                              : openTask(r.taskId)
+                          }
+                        >
+                          {r.title}
+                        </button>
+                        <small>{dateTime(r.timestamp)}</small>
+                      </td>
+                      <td>
+                        {names[r.provider]}
+                        <small>{r.model}</small>
+                      </td>
+                      <td>{fmt(r.input)}</td>
+                      <td>{fmt(r.cacheRead)}</td>
+                      <td>{fmt(r.output)}</td>
+                      <td>{fmt(r.total)}</td>
+                      <td>
+                        <button
+                          className="outline-button"
+                          onClick={() => setSelected(r)}
+                        >
+                          查看
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {!records.total && (
+              <p className="muted">
+                {demo
+                  ? "演示图表使用合成数字，不对应真实证据。"
+                  : "当前筛选下暂无用量明细。"}
+              </p>
+            )}
+            <Pagination label="用量明细" total={records.total} page={page} onChange={setPage} size={listSize}/>
+</section>}</Pane>
+<Pane id="supplement"><Screens id="补录" choices={[{id:'balance',label:'历史余额'},{id:'precise',label:'精确补录'}]}><Pane id="balance">{!demo && <HistoryEditor history={historical} onSaved={()=>setRefresh(v=>v+1)}/> }
+      </Pane><Pane id="precise"><ManualUsage demo={demo} onSaved={()=>setRefresh(v=>v+1)}/></Pane></Screens></Pane>
+<Pane id="prices"><Screens id="价格" choices={[{id:'fees',label:'费用与覆盖'},{id:'budget',label:'公开预算'},{id:'catalogue',label:'官方目录'},{id:'contract',label:'合同单价'}]}><Pane id="fees">{data&&<section className="source-panel">
               <div className="section-heading">
                 <h3>估算费用与计价覆盖</h3>
                 <button
                   className="text-button"
-                  onClick={() => setPricing(!pricing)}
+                  onClick={() => {setPricing(true);setPriceTab('contract');}}
                 >
                   <Plus size={14} />
                   配置单价
@@ -676,58 +757,7 @@ export default function UsagePage({
                   条；独立展示，不与自定义估算相加）
                 </p>
               ))}
-            </section>
-          </div>
-          <div className="explanation usage-disclosure">
-            <Info size={17} />
-            <p>
-              当前范围内保留 {data.coverage.totalSessions} 个 IDE 会话，其中{" "}
-              {data.coverage.measuredSessions} 个包含可解析用量。
-              {data.summary.incomplete} 条用量缺少输入或输出；
-              {data.summary.cacheUnknown}{" "}
-              条未报告缓存读取。缺失值不按零用量推断。Codex
-              累计值按增量去重；Claude/Pi 缓存输入合并；推理 token
-              是输出的子集，不重复相加。Pi
-              的所有已保留分支均计入实际发生的用量。
-            </p>
-          </div>
-          <section className="source-panel usage-models">
-            <div className="section-heading">
-              <h3>工具与模型对比</h3>
-              <select aria-label="模型对比范围" value={scope} onChange={e=>setScope(e.target.value)}><option value="lifetime">全部历史（与累计一致）</option><option value="period">当前日期范围</option></select>
-            </div>
-            <p className="muted">青绿：明细记录（采集/精确补录） · 紫色：历史余额；模型分配并非平台账单。对比合计 {short(comparisonTotal)}。</p>
-            <Paged label="工具与模型">{combinedRows.map((t) => (
-              <div className="usage-model-row" key={t.provider + t.model}>
-                <div>
-                  <strong>{names[t.provider] || t.provider}</strong>
-                  <small>{t.model}</small>
-                </div>
-                <div className="model-bar">
-                  <i
-                    style={{
-                      width: `${comparisonTotal ? (t.measured / comparisonTotal) * 100 : 0}%`,
-                    }}
-                  />
-                  <i className="historical-bar" style={{width:`${comparisonTotal ? t.historical/comparisonTotal*100 : 0}%`}}/>
-                </div>
-                <div>
-                  <strong>{short(t.total)}</strong>
-                  <small>
-                    明细 {short(t.measured)} / 历史余额 {short(t.historical)}
-                    {t.measured>0 && <> · 输入 {short(t.input)} / 输出 {short(t.output)}</>}
-                  </small>
-                </div>
-              </div>
-            ))}</Paged>
-            {!combinedRows.length && (
-              <p className="muted">
-                没有可解析的用量记录。采集到明确 usage 字段后会出现在这里。
-              </p>
-            )}
-          </section>
-          {pricing && (
-            <section className="source-panel price-editor">
+            </section>}</Pane><Pane id="budget">{data?.referenceBudgets&&<section className="source-panel"><h3>公开 API 价格预算 · 当前日期范围</h3><p className="muted">按当前公开标准价格换算的参考预算，区间反映上下文或峰谷等级。缺失缓存字段按普通输入；区间不是实际费用上下界。未套用历史价格、订阅额度、Fast/Batch、区域及平台附加费；与合同计价及来源账单独立，不能相加。无输入输出拆分的比例补录不计价。</p><Paged label="参考预算">{data.referenceBudgets.map(r=><div className="report-fact" key={r.provider+r.model}><strong>{names[r.provider]} · {r.model}</strong><p>{r.available?`${r.min?.toFixed(4)}–${r.max?.toFixed(4)} ${r.currency}`:r.reason}</p>{r.source&&<a href={r.source} target="_blank" rel="noreferrer">官方依据 ↗</a>}</div>)}</Paged></section>}</Pane><Pane id="catalogue"><PriceCatalogue demo={demo} onApply={r=>{setPricing(true);setPriceTab('contract');setPrice({...price,provider:({'OpenAI':'codex','Anthropic':'claude','DeepSeek':'deepseek','Cursor 路由':'cursor','腾讯云':'workbuddy'} as Record<string,string>)[r.vendor]||price.provider,model:r.model,currency:r.currency,date:today(),input:String(r.input),output:String(r.output),cacheRead:String(r.cacheRead),cacheWrite:String(r.cacheWrite),cacheWriteLong:String(r.cacheWriteLong)});}}/></Pane><Pane id="contract">{data&&(pricing?<section className="source-panel price-editor">
               <div className="section-heading">
                 <h3>每百万 Token 单价</h3>
                 <button
@@ -749,8 +779,8 @@ export default function UsagePage({
                   查看 DeepSeek 官方价格 ↗
                 </a>
               </p>
-              <form onSubmit={(e) => void savePrice(e)}>
-                <div className="form-grid">
+              <Screens id="合同单价" choices={[{id:"edit",label:"填写规则"},{id:"rules",label:"已保存规则"}]}><Pane id="edit"><form noValidate onSubmit={(e) => void savePrice(e)}>
+                <Steps label="单价填写步骤">
                   <label className="field-label">
                     工具
                     <select
@@ -841,11 +871,11 @@ export default function UsagePage({
                       />
                     </label>
                   ))}
-                </div>
+                </Steps>
                 <button className="primary-button" disabled={busy}>
                   保存单价规则
                 </button>
-              </form>
+              </form></Pane><Pane id="rules">
               <div>
                 <Paged label="单价规则">{data.prices.map((p) => (
                   <div className="price-rule" key={p.id}>
@@ -878,76 +908,7 @@ export default function UsagePage({
                   </div>
                 ))}</Paged>
               </div>
-            </section>
-          )}
-          <section className="source-panel usage-ledger">
-            <div className="section-heading">
-              <h3>
-                <Search size={18} /> 用量明细与依据
-              </h3>
-              <span>{records.total} 条</span>
-            </div>
-            <div className="usage-table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>时间 / 会话</th>
-                    <th>工具 / 模型</th>
-                    <th>输入</th>
-                    <th>缓存读取</th>
-                    <th>输出</th>
-                    <th>总 Token</th>
-                    <th>依据</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {records.records.map((r) => (
-                    <tr key={r.id}>
-                      <td>
-                        <button
-                          className="text-button"
-                          onClick={() =>
-                            r.provider === "agentdock"
-                              ? setSelected(r)
-                              : openTask(r.taskId)
-                          }
-                        >
-                          {r.title}
-                        </button>
-                        <small>{dateTime(r.timestamp)}</small>
-                      </td>
-                      <td>
-                        {names[r.provider]}
-                        <small>{r.model}</small>
-                      </td>
-                      <td>{fmt(r.input)}</td>
-                      <td>{fmt(r.cacheRead)}</td>
-                      <td>{fmt(r.output)}</td>
-                      <td>{fmt(r.total)}</td>
-                      <td>
-                        <button
-                          className="outline-button"
-                          onClick={() => setSelected(r)}
-                        >
-                          查看
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {!records.total && (
-              <p className="muted">
-                {demo
-                  ? "演示图表使用合成数字，不对应真实证据。"
-                  : "当前筛选下暂无用量明细。"}
-              </p>
-            )}
-            <Pagination label="用量明细" total={records.total} page={page} onChange={setPage}/>
-</section>
-        </>
-      )}
+            </Pane></Screens></section>:<button className="primary-button" onClick={()=>setPricing(true)}>配置单价</button>)}</Pane></Screens></Pane></Screens>
       {selected && (
         <div className="detail-overlay">
           <button
@@ -978,7 +939,7 @@ export default function UsagePage({
                 {names[selected.provider]} / {selected.model} ·{" "}
                 {dateTime(selected.timestamp)}
               </p>
-              <dl>
+              <dl><Paged label="用量字段">
                 {[
                   ["输入（含缓存）", fmt(selected.input)],
                   ["缓存读取", fmt(selected.cacheRead)],
@@ -1001,7 +962,7 @@ export default function UsagePage({
                     <dd>{v}</dd>
                   </div>
                 ))}
-              </dl>
+              </Paged></dl>
               {selected.note&&<p className="preserve">补录依据：{selected.note}</p>}{selected.issue && <p className="warning">{selected.issue}</p>}
               <code className="evidence-path">
                 {selected.evidence.path || (selected.mode==='manual'?'AgentDock 手动补录':"AgentDock 内置助手")}
@@ -1021,10 +982,11 @@ export default function UsagePage({
   );
 }
 function Heatmap({ days, estimates }: { days: { day: number; total: number }[]; estimates: {day:number;total:number}[] }) {
-  const [activeDay,setActiveDay]=useState<number>();
+  const [activeDay,setActiveDay]=useState<number>();const [compact,setCompact]=useState(window.innerWidth<1100);const [heatPage,setHeatPage]=useSection('热力图','1');const capacity=compact?91:365,page=Math.min(Number(heatPage)||1,Math.ceil(365/capacity));useEffect(()=>{const resize=()=>setCompact(window.innerWidth<1100);window.addEventListener('resize',resize);return()=>window.removeEventListener('resize',resize);},[]);
   const now = Math.floor((Date.now() + 28800000) / 86400000),
     start = now - 364,
-    startWeekday = new Date(start * 86400000).getUTCDay(),
+    displayStart=start+(page-1)*capacity,displayDays=Math.min(capacity,now-displayStart+1),
+    startWeekday = new Date(displayStart * 86400000).getUTCDay(),
     map = new Map(days.map((d) => [d.day, d.total])),
     estimated = estimates.reduce((map,d)=>map.set(d.day,(map.get(d.day)||0)+d.total),new Map<number,number>()),
     max = Math.max(1,...Array.from({length:365},(_,i)=>(map.get(start+i)||0)+(estimated.get(start+i)||0)));
@@ -1035,8 +997,8 @@ function Heatmap({ days, estimates }: { days: { day: number; total: number }[]; 
           {Array.from({ length: startWeekday }, (_, i) => (
             <span className="heatmap-pad" key={"pad" + i} />
           ))}
-          {Array.from({ length: 365 }, (_, i) => {
-            const day = start + i,
+          {Array.from({ length: displayDays }, (_, i) => {
+            const day = displayStart + i,
               measured = map.get(day)||0, historical = estimated.get(day)||0,
               n = measured + historical,
               level = n
@@ -1055,13 +1017,13 @@ function Heatmap({ days, estimates }: { days: { day: number; total: number }[]; 
           })}
         </div>
         <div className="heatmap-months">
-          {Array.from({ length: 12 }, (_, i) => {
-            const d = new Date((now - 330 + i * 30) * 86400000);
+          {Array.from({ length: compact?3:12 }, (_, i) => {
+            const d = new Date((displayStart + i * 30) * 86400000);
             return <span key={i}>{d.getUTCMonth() + 1}月</span>;
           })}
         </div>
       </div>
-      <p className="muted heatmap-readout" aria-live="polite">{activeDay!==undefined?`${new Date(activeDay*86400000).toISOString().slice(0,10)} · 日志实测 ${fmt(map.get(activeDay)||0)} · 手动补录 ${fmt(estimated.get(activeDay)||0)}（规则分布）`:'悬停或聚焦日期，查看实测与手动补录。'}</p>
+      <Pagination label="热力图日期" total={365} size={capacity} page={page} onChange={n=>setHeatPage(String(n))}/><p className="muted heatmap-readout" aria-live="polite">{activeDay!==undefined?`${new Date(activeDay*86400000).toISOString().slice(0,10)} · 日志实测 ${fmt(map.get(activeDay)||0)} · 手动补录 ${fmt(estimated.get(activeDay)||0)}（规则分布）`:'悬停或聚焦日期，查看实测与手动补录。'}</p>
       <div className="heatmap-legend">
         <span>少</span>
         {[0, 1, 2, 3, 4].map((i) => (

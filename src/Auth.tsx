@@ -1,3 +1,4 @@
+import {Screens,Pane} from './Screen';
 import {AvatarContent,avatarFromFile} from './Avatar';
 import {Paged} from './Pagination';
 import {BrandMark} from './Brand';
@@ -276,7 +277,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
             查看演示体验 ↗
           </button>
         </section>
-      </main>
+      </main><footer className="footer auth-footer"><span><ShieldCheck size={12}/> 本地工作空间 · Asia/Shanghai</span><span className="page-quote">从清晰的起点，开始今天的工作。</span></footer>
     </div>
   );
 }
@@ -349,7 +350,7 @@ export function AccountPage() {
           {message}
         </p>
       )}
-      <div className="settings-grid">
+      <Screens id="账号" choices={[{id:"profile",label:"个人资料"},{id:"security",label:"安全"},{id:"sessions",label:"登录会话"}]}><Pane id="profile">
         <section className="source-panel">
           <h3>
             <UserRound size={19} /> 个人资料
@@ -389,7 +390,7 @@ export function AccountPage() {
             退出登录 / 锁定工作空间
           </button>
         </section>
-        <section className="source-panel">
+        </Pane><Pane id="security"><section className="source-panel">
           <h3>
             <LockKeyhole size={19} /> 修改密码
           </h3>
@@ -453,7 +454,7 @@ export function AccountPage() {
             </button>
           </form>
         </section>
-      </div>
+      </Pane><Pane id="sessions">
       <section className="source-panel account-sessions">
         <div className="section-heading">
           <h3>
@@ -486,7 +487,7 @@ export function AccountPage() {
             </div>
           </div>
         ))}</Paged>
-      </section>
+      </section></Pane></Screens>
     </div>
   );
 }

@@ -1,3 +1,4 @@
+import {Paged} from './Pagination';
 import { useEffect, useRef, useState } from "react";
 import { Command, Search, X, ArrowUpRight } from "lucide-react";
 export function QuickActions({
@@ -76,7 +77,7 @@ export function QuickActions({
             <X size={18} />
           </button>
         </header>
-        <div>
+        <div><Paged key={q} label="快捷操作">
           {actions
             .filter((a) => a.join("").includes(q))
             .map(([title, desc, id]) => (
@@ -95,7 +96,7 @@ export function QuickActions({
                 <ArrowUpRight size={16} />
               </button>
             ))}
-        </div>
+        </Paged></div>
         <footer>Ctrl / ⌘ + Shift + P 打开 · Esc 关闭</footer>
       </dialog>
     </>
