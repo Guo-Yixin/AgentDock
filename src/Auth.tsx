@@ -1,3 +1,4 @@
+import {BrandMark} from './Brand';
 import {
   createContext,
   useContext,
@@ -119,7 +120,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     <div className="auth-shell">
       <header className="auth-header">
         <div className="auth-brand">
-          <Orbit /> AgentDock<span>智能体任务坞</span>
+          <BrandMark /> AgentDock<span>智能体任务坞</span>
         </div>
         <ThemeSelector />
       </header>
@@ -136,7 +137,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
             <i />
             <i />
             <i />
-            <Orbit size={68} />
+            <BrandMark size={68} />
             <span>AD</span>
           </div>
           <div className="auth-tools">

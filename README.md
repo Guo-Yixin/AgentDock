@@ -2,6 +2,13 @@
 
 本地 AI 编程任务指挥台：汇总 Codex、Claude Code、Cursor、Pi、DeepSeek Harness 和 WorkBuddy 的会话，按项目整理进展、日报与周报，并提供日历日程和带来源的分析助手。
 
+## 0.6.1 整洁布局与统一标识
+
+- 左侧导航按“工作空间、记忆与协作、观察与计划、连接与设置”分组，可折叠分组；电脑窗口可收起为图标栏，移动端仍使用完整抽屉导航。当前页面所属分组在切换进入时展开。
+- 首页优先展示任务和下一步；记忆工作流入口、来源状态、小时活动图与详情时间线可按需展开。记忆编辑页的分类、确认和来源也可折叠，填写内容保持保留。
+- 展开状态保存在当前浏览器或桌面渲染器的本地偏好中。网页和桌面端分别记住布局；不写入任务数据或助手上下文。
+- 新标识采用“节点 + 任务坞”的简约几何图形，统一导航、首次配置页、favicon、桌面安装图标和托盘。矢量源为 `public/brand.svg`；开发者安装 Chromium 后运行 `npm run build:icons`，可重新生成 `desktop/icon.png` 和 favicon。
+
 ## 0.6 记忆、工作流与交互
 
 新增 **记忆库** 与 **工作流**，让工作记录能帮助下一次行动。视觉参考 [TechSpar](https://github.com/AnnaSuSu/TechSpar) 的分层表面和功能卡片，独立实现中性底色、琥珀色操作强调、青绿状态与柔和局部光晕，统一网页和桌面端的浅色 / 深色表单与导航。
@@ -36,7 +43,7 @@
 
 ## Windows 桌面测试版
 
-安装包 `AgentDock-0.6.0-windows-x64.exe` 由 [GitHub 自动检查](https://github.com/Guo-Yixin/AgentDock/actions/workflows/ci.yml) 构建，进入成功运行的 Artifacts 下载 `AgentDock-windows-x64`（需登录 GitHub，保留 14 天）。公开正式版本在 [Releases](https://github.com/Guo-Yixin/AgentDock/releases)；没有更新时不会自动下载或安装。
+安装包 `AgentDock-0.6.1-windows-x64.exe` 由 [GitHub 自动检查](https://github.com/Guo-Yixin/AgentDock/actions/workflows/ci.yml) 构建，进入成功运行的 Artifacts 下载 `AgentDock-windows-x64`（需登录 GitHub，保留 14 天）。公开正式版本在 [Releases](https://github.com/Guo-Yixin/AgentDock/releases)；没有更新时不会自动下载或安装。
 
 - 当前用户安装，无需管理员权限。捆绑 SHA-256 校验的官方 Node.js 24.21.0，无需另装 Node.js；**仍需自行准备并配置 MySQL**。
 - 关闭窗口隐藏到托盘；托盘可打开窗口、暂停/恢复采集或退出。退出仅停止本应用启动的后端。服务异常会尝试恢复，也可手动重试。
