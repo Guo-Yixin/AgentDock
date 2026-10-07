@@ -1,3 +1,4 @@
+import {manualPut} from '../server/usage-manual.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync,mkdirSync,writeFileSync,appendFileSync } from 'node:fs';
@@ -162,5 +163,23 @@ test('MySQL: Codex 旧分叉断点修复父子归属、用量去重、用户备�
  assert.equal((await usageOverview(store,{})).summary.total,320);
  await collector.scan();assert.equal((await usageOverview(store,{})).summary.total,320);
  const o=await store.overview(collector.sources,collector.progress);const source=o.sources.find(s=>s.id==='codex');assert.equal(source.state,'ready');assert.equal(source.partialSessions,1);assert.match(source.message,/历史会话/);
+ }finally{await store.close();}
+});
+
+test('MySQL: 精确补录细化守恒、并发版本、删除恢复及采集互斥',{skip:!enabled},async()=>{
+ const {store}=await testStore('agentdock_test_precision');try{
+ await createOwner(store,{username:'precision_test',password:'Synthetic-only-pass!'});
+ const lease=await store.collectionLease();assert.ok(lease);assert.equal(await store.collectionLease(),null);await lease();const again=await store.collectionLease();assert.ok(again);await again();
+ const yesterday=new Date(Date.now()+28800000-86400000).toISOString().slice(0,10);
+ await saveHistory(store,{mode:'amount',tokens:1000000,start:'2025-01-01',end:yesterday,note:'合成基准',allocations:[{provider:'codex',model:'synthetic',weight:10000}]},'owner');
+ const input={id:'precision-case',provider:'codex',model:'synthetic',input:800,output:200,timestamp:Date.now()-86400000,note:'合成手动补录',version:0,refine:true};
+ const record=await manualPut(store,input,'owner');assert.equal(record.version,1);
+ const args={start:0,end:Date.now()+1};let o=await usageOverview(store,args);assert.equal(o.profile.total,1000000);assert.equal(o.history.availableTotal,999000);assert.equal(o.profile.activeDays,0);assert.equal(o.summary.input,800);
+ await assert.rejects(()=>manualPut(store,input,'owner'),/更新/);
+ const edit=await manualPut(store,{...input,input:600,output:400,version:1},'owner');assert.equal(edit.version,2);
+ await manualPut(store,{id:input.id,version:2},'owner',true);o=await usageOverview(store,args);assert.equal(o.profile.total,1000000);assert.equal(o.history.availableTotal,1000000);assert.equal(o.summary.records,0);
+ await assert.rejects(()=>manualPut(store,{id:input.id,version:3},'owner',true));
+ for(let i=0;i<12;i++)await store.upsert(finalize(emptyTask('codex','page-'+i,'fixture.jsonl',{title:'分页 '+i,updatedAt:Date.now()+i})));
+ const first=await store.list({pageSize:5,page:1}),last=await store.list({pageSize:5,page:3});assert.equal(first.tasks.length,5);assert.equal(last.tasks.length,2);assert.equal(first.total,12);
  }finally{await store.close();}
 });

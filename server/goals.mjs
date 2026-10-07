@@ -1,12 +1,13 @@
 import { randomUUID, createHash } from 'node:crypto';
 export const goalStates = ['not_started', 'in_progress', 'blocked', 'done', 'archived'];
-export async function goalList(store, {project='', status='', q='', attention=false, page=1}={}) {
+export async function goalList(store, {project='', status='', q='', attention=false, page=1,pageSize=30}={}) {
  const clauses=['1=1'], params=[];
  for(const [v,k] of [[project,'project_id'],[status,'status']])if(v){clauses.push(`${k}=?`);params.push(v);}
  if(q){clauses.push('LOCATE(?,title)>0');params.push(q);}
  if(attention===true||attention==='true')clauses.push("(status='blocked' OR needs_review=1)");const where=clauses.join(' AND '), safe=Math.max(1,Math.floor(Number(page)||1));
+ const size=Math.min(30,Math.max(1,Math.floor(Number(pageSize)||30)));
  const [count]=await store.rows(`SELECT COUNT(*) total FROM ad_goals WHERE ${where}`,params);
- const goals=await store.rows(`SELECT g.*, (SELECT COUNT(*) FROM ad_goal_sessions l WHERE l.goal_id=g.id) sessionCount FROM ad_goals g WHERE ${where} ORDER BY updated_at DESC LIMIT 30 OFFSET ${(safe-1)*30}`,params);
+ const goals=await store.rows(`SELECT g.*, (SELECT COUNT(*) FROM ad_goal_sessions l WHERE l.goal_id=g.id) sessionCount FROM ad_goals g WHERE ${where} ORDER BY updated_at DESC LIMIT ${size} OFFSET ${(safe-1)*size}`,params);
  return {goals:goals.map(decodeGoal),total:Number(count.total),page:safe};
 }
 function decodeGoal(r){return r?{id:r.id,title:r.title,projectId:r.project_id,description:r.description,note:r.note,status:r.status,confirmedAt:r.confirmed_at?Number(r.confirmed_at):null,updatedAt:Number(r.updated_at),needsReview:Boolean(r.needs_review),sessionCount:Number(r.sessionCount||0)}:null;}

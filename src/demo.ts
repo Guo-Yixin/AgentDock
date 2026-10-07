@@ -15,7 +15,7 @@ export function demoOverview(): Overview {
 }
 export function demoPage(q: string, provider: string, project: string, status: string, page: number,pinned=false): TaskPage {
   const tasks = demoTasks.filter(t => (!pinned||t.annotation.pinned)&& (!q || `${t.title} ${t.summary}`.includes(q)) && (!provider || t.provider === provider) && (!project || t.projectId === project) && (!status || t.completion === status));
-  return { tasks: tasks.slice((page - 1) * 30, page * 30), total: tasks.length, page, pageSize: 30 };
+  return { tasks: tasks.slice((page - 1) * 5, page * 5), total: tasks.length, page, pageSize: 5 };
 }
 export function demoDetail(id: string) { return structuredClone(demoTasks.find(t => t.id === id)!); }
 export function demoPatch(id: string, patch: Partial<Annotation>) {

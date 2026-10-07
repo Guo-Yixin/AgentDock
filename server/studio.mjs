@@ -25,7 +25,7 @@ export async function validateRefs(store, refs = []) {
   }
   return result;
 }
-export async function studioList(store, { kind, q = '', status = '', project = '', due = false, page = 1 } = {}) {
+export async function studioList(store, { kind, q = '', status = '', project = '', due = false, page = 1, pageSize=30 } = {}) {
   if (!states[kind]) fail('对象类型无效');
   const clauses = ['kind=?'], params = [kind];
   if (status) { if (!states[kind].includes(status)) fail('状态无效'); clauses.push("JSON_UNQUOTE(JSON_EXTRACT(record,'$.status'))=?"); params.push(status); }
@@ -35,7 +35,8 @@ export async function studioList(store, { kind, q = '', status = '', project = '
   if (due) { clauses.push("JSON_UNQUOTE(JSON_EXTRACT(record,'$.status'))='verified' AND CAST(JSON_UNQUOTE(JSON_EXTRACT(record,'$.reviewAt')) AS UNSIGNED)<=?"); params.push(Date.now()); }
   const where = clauses.join(' AND '), safePage = Math.max(1, Math.min(100000, Math.floor(Number(page) || 1)));
   const [count] = await store.rows(`SELECT COUNT(*) total FROM ad_documents WHERE ${where}`, params);
-  const rows = await store.rows(`SELECT record FROM ad_documents WHERE ${where} ORDER BY updated_at DESC,id LIMIT 30 OFFSET ${(safePage-1)*30}`, params);
+  const size=Math.min(30,Math.max(1,Math.floor(Number(pageSize)||30)));
+  const rows = await store.rows(`SELECT record FROM ad_documents WHERE ${where} ORDER BY updated_at DESC,id LIMIT ${size} OFFSET ${(safePage-1)*size}`, params);
   return { items: rows.map(r => decode(r.record)), total: Number(count.total), page: safePage };
 }
 export async function studioGet(store, { kind, id }) { if (!states[kind]) fail('对象类型无效'); return store.document(id, kind); }

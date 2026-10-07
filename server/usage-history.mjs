@@ -56,7 +56,7 @@ export async function saveHistory(store, input, ownerId) {
     await tx.rows('SELECT id FROM ad_users WHERE id=? FOR UPDATE',[ownerId]);
     const previous = await tx.document(id,'usage-history');
     const anchorAt = Date.now();
-    const [counts] = await tx.rows('SELECT COALESCE(SUM(total_tokens),0) total,COALESCE(SUM(IF(recorded_at<=?,total_tokens,0)),0) beforeAnchor FROM ad_usage',[anchorAt]);
+    const [counts] = await tx.rows("SELECT COALESCE(SUM(total_tokens),0) total,COALESCE(SUM(IF(recorded_at<=? AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(record,'$.mode')),'')<>'manual',total_tokens,0)),0) beforeAnchor FROM ad_usage",[anchorAt]);
     const measured = Number(counts.total);
     const supplementedTotal = value.mode === 'target' ? value.tokens - measured : value.tokens;
     if (supplementedTotal < 0 || !Number.isSafeInteger(supplementedTotal + measured)) throw new Error('累计基准不能小于已采集用量或超过安全整数范围');
@@ -72,7 +72,7 @@ export async function historyOverview(store,args) {
   const config = await store.document(id,'usage-history');
   let recovered = 0, availableTotal = 0;
   if (config?.enabled) {
-    const [current] = await store.rows('SELECT COALESCE(SUM(total_tokens),0) total FROM ad_usage WHERE recorded_at<=?',[config.anchorAt]);
+    const [current] = await store.rows("SELECT COALESCE(SUM(total_tokens),0) total FROM ad_usage WHERE recorded_at<=? AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(record,'$.mode')),'')<>'manual'",[config.anchorAt]);
     recovered = Math.min(config.supplementedTotal,Math.max(0,Number(current.total)-config.measuredBeforeAnchor));
     availableTotal = config.supplementedTotal-recovered;
   }

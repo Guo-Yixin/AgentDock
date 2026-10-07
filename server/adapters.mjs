@@ -2,8 +2,8 @@ import {consumeUsage} from './usage.mjs';
 import { zstdDecompressSync } from 'node:zlib';
 import { hash, message, addEvent, setTodos, contentText, cleanText, epoch } from './parsers.mjs';
 
-export function consumeExtra(task, row, evidence) {
-  const timestamp = epoch(row.timestamp || row.time || row.createdAt || row.message?.timestamp);
+export function consumeExtra(task, row, evidence, buildBranches = true) {
+  const timestamp = epoch(row.timestamp || row.time || row.createdAt || row.time0 || row.message?.timestamp);
   if (timestamp) { task.createdAt ||= timestamp; task.updatedAt = Math.max(task.updatedAt, timestamp); }
   if (task.provider === 'pi') {
     if (row.type === 'session') { task.nativeId = row.id; task.cwd = row.cwd || ''; task.parentNativeId = row.parentSession || ''; task.surface = 'CLI'; if (![1, 2, 3].includes(row.version)) task.partial = true; }
@@ -16,13 +16,7 @@ export function consumeExtra(task, row, evidence) {
     if(row.type==='message'&&row.message?.stopReason==='toolUse')task.activity='recent';
     if(row.type==='message'&&['error','aborted'].includes(row.message?.stopReason))task.activity='interrupted';
     if (row.type === 'session_info' && row.name) task.title = row.name;
-    const nodes = task._piNodes || {}; const parents = new Set(Object.values(nodes).map(n => n.parentId));
-    task.branches = Object.values(nodes).filter(n => !parents.has(n.id)).map(leaf => {
-      const chain = []; const seen = new Set(); let entry = leaf;
-      while (entry && !seen.has(entry.id)) { seen.add(entry.id); chain.unshift(entry); entry = nodes[entry.parentId]; }
-      return { id: leaf.id, summaryEvidence: [...chain].reverse().find(n => n.role === 'assistant' && n.text)?.evidence || null, summary: [...chain].reverse().find(n => n.role === 'assistant' && n.text)?.text || '', goal: chain.find(n => n.role === 'user' && n.text)?.text || '', events: chain.filter(n => n.text).map(n => ({ kind: n.role, text: n.text, timestamp: n.timestamp, evidence: n.evidence })) };
-    });
-    task.inferredBranch = task._piLeaf; const branch = task.branches.find(b => b.id === task._piLeaf); if (branch) { task.summary = branch.summary; task.goal = branch.goal; }
+    if(buildBranches)rebuildPi(task);
   }
   if (task.provider === 'workbuddy') {
     task.nativeId = row.sessionId || task.nativeId; task.cwd = row.cwd || row.meta?.cwd || task.cwd; task.surface = '桌面/CLI';
@@ -32,7 +26,8 @@ export function consumeExtra(task, row, evidence) {
   }
   if (task.provider === 'deepseek') {
     const data = row.data || {};
-    if (row.type === 'session') { task.nativeId = row.id; task.cwd = row.cwd || ''; task.createdAt = row.createdAt || task.createdAt; task.parentNativeId = row.parentSession || ''; task.surface = row.origin === 'subagent' ? '子代理' : 'CLI'; if (row.version !== 0) task.partial = true; }
+    if (row.type === 'session/title' && data.title) task.title = cleanText(data.title,180);
+    if (row.type === 'session') { task.nativeId = row.id; task.cwd = row.cwd || ''; task.createdAt = epoch(row.createdAt) || task.createdAt; task.parentNativeId = row.parentSession || ''; task.surface = row.origin === 'subagent' ? '子代理' : 'CLI'; if (row.version !== 0) task.partial = true; }
     const location = { ...evidence, locator: `${evidence.locator || ''};seq=${row.seq ?? row.seq0 ?? '?'}` };
     if(row.type==='turn/start'){task.activity='recent';task.sourceOutcome=null;}
     if (row.type === 'user/message') message(task, 'user', contentText(data.content || data.text || data.message?.content), timestamp, location);
@@ -71,3 +66,15 @@ export function zstdFrames(bytes) {
   return { frames, incomplete: false, offset: cursor };
 }
 export const decodeFrame = bytes => zstdDecompressSync(bytes, { maxOutputLength: 32 * 1024 * 1024 }).toString('utf8');
+
+export function rebuildPi(task){
+    const nodes = task._piNodes || {}; const parents = new Set(Object.values(nodes).map(n => n.parentId));
+    task.branches = Object.values(nodes).filter(n => !parents.has(n.id)).map(leaf => {
+      const chain = []; const seen = new Set(); let entry = leaf;
+      while (entry && !seen.has(entry.id)) { seen.add(entry.id); chain.push(entry); entry = nodes[entry.parentId]; }
+      chain.reverse();
+      return { id: leaf.id, summaryEvidence: [...chain].reverse().find(n => n.role === 'assistant' && n.text)?.evidence || null, summary: [...chain].reverse().find(n => n.role === 'assistant' && n.text)?.text || '', goal: chain.find(n => n.role === 'user' && n.text)?.text || '', events: chain.filter(n => n.text).slice(-200).map(n => ({ kind: n.role, text: n.text, timestamp: n.timestamp, evidence: n.evidence })) };
+    });
+    task.inferredBranch = task._piLeaf; const branch = task.branches.find(b => b.id === task._piLeaf); if (branch) { task.summary = branch.summary; task.goal = branch.goal; }
+return task;
+}

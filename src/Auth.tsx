@@ -1,3 +1,5 @@
+import {AvatarContent,avatarFromFile} from './Avatar';
+import {Paged} from './Pagination';
 import {BrandMark} from './Brand';
 import {
   createContext,
@@ -23,6 +25,7 @@ import { ThemeSelector } from "./Theme";
 import { useUnsavedChanges } from "./workspace/shared";
 const SettingsPage = lazy(() => import("./workspace/SettingsPage"));
 type User = {
+  avatar?:string;
   id: string;
   username: string;
   displayName: string;
@@ -351,7 +354,7 @@ export function AccountPage() {
           <h3>
             <UserRound size={19} /> 个人资料
           </h3>
-          <p>账号：{user.username}</p>
+          <p>账号：{user.username}</p><span className="avatar"><AvatarContent/></span><label className="field-label">更换头像<input aria-label="更换头像" type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={e=>{const f=e.target.files?.[0];e.target.value='';if(f)void action(async()=>{const avatar=await avatarFromFile(f);return request('/api/account/avatar',{method:'PATCH',body:JSON.stringify({avatar})});},'头像已保存');}}/></label><button className="text-button" disabled={busy||!user.avatar} onClick={()=>void action(()=>request('/api/account/avatar',{method:'PATCH',body:JSON.stringify({avatar:''})}),'已恢复默认头像')}>恢复默认头像</button>
           <label className="field-label">
             显示名称
             <input
@@ -469,7 +472,7 @@ export function AccountPage() {
             退出其他会话
           </button>
         </div>
-        {sessions.map((s) => (
+        <Paged label="登录会话">{sessions.map((s) => (
           <div className="account-session" key={s.id}>
             <Monitor size={20} />
             <div>
@@ -482,7 +485,7 @@ export function AccountPage() {
               </p>
             </div>
           </div>
-        ))}
+        ))}</Paged>
       </section>
     </div>
   );

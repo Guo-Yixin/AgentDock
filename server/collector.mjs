@@ -3,52 +3,58 @@ import { readdir, stat, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setImmediate as yieldThread } from 'node:timers/promises';
-import { consumeExtra, zstdFrames, decodeFrame } from './adapters.mjs';
+import { consumeExtra, rebuildPi, zstdFrames, decodeFrame } from './adapters.mjs';
 import { consumeClaude, consumeCodex, cursorTask, emptyTask, epoch, finalize, cleanText, PARSER_VERSION } from './parsers.mjs';
 
-export async function* walk(root, extension) {
+export async function* walk(root, extension, stopped = () => false) {
+  if(stopped())return;
   let entries; try { entries = await readdir(root, { withFileTypes: true }); } catch { return; }
   for (const entry of entries) {
+    if(stopped())return;
     const file = path.join(root, entry.name);
-    if (entry.isDirectory()) yield* walk(file, extension);
+    if (entry.isDirectory()) yield* walk(file, extension, stopped);
     else if (entry.isFile() && entry.name.endsWith(extension)) yield file;
   }
 }
 export function workbuddyTaskDirectory(root,id){return typeof id==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(id)?path.join(root,'tasks',id):null;}
-export async function readLog(file, provider, previous, meta, onProgress) {
+export async function readLog(file, provider, previous, meta, onProgress, limits = {}) {
   const stats = await stat(file);
   const reset = !previous || previous.task._parserVersion !== PARSER_VERSION || previous.task._sourceInode !== stats.ino || stats.size < previous.offset || (stats.size === previous.size && stats.mtimeMs !== previous.mtime);
   let offset = reset ? 0 : previous.offset; let line = reset ? 0 : previous.line;
   let task = reset ? emptyTask(provider, path.basename(file, '.jsonl'), file, meta) : previous.task;
   task._newEvents = [];task._newUsage=[];
-  if (!reset && stats.mtimeMs === previous.mtime && stats.size === previous.size) {
+  if (!reset && stats.mtimeMs === previous.mtime && stats.size === previous.size && !previous.task._importPending) {
     const metadataChanged = meta && ((meta.title && task.title !== meta.title) || (meta.archived !== undefined && task.archived !== meta.archived));
     if (!metadataChanged) return { unchanged: true, task, stats, offset, line, unfinished: Boolean(task._unfinished) };
     task = { ...task, title: meta.title || task.title, archived: meta.archived ?? task.archived };
     return { unchanged: false, task: finalize(task), stats, offset, line };
   }
   if (!reset && meta) task = { ...task, title: meta.title || task.title, archived: meta.archived ?? task.archived };
-  let pending = Buffer.alloc(0); let consumed = 0;
+  let pending = Buffer.alloc(0); let consumed = 0; let limited = false;
+  const batchStart=offset;
   const stream = createReadStream(file, { start: offset, highWaterMark: 65536 });
   try {
-    for await (const chunk of stream) {
+    outer: for await (const chunk of stream) {
+      if(limits.stopped?.()){limited=true;break;}
       pending = Buffer.concat([pending, chunk]); let newline;
       while ((newline = pending.indexOf(10)) !== -1) {
         const raw = pending.subarray(0, newline).toString('utf8').replace(/\r$/, '');
         offset += newline + 1; pending = pending.subarray(newline + 1); line++;
         if (raw.trim()) {
-          try { const record = JSON.parse(raw); const evidence = { path: file, line }; task = provider === 'codex' ? consumeCodex(task, record, evidence) : provider === 'claude' ? consumeClaude(task, record, evidence) : consumeExtra(task, record, evidence); }
+          try { const record = JSON.parse(raw); const evidence = { path: file, line }; task = provider === 'codex' ? consumeCodex(task, record, evidence) : provider === 'claude' ? consumeClaude(task, record, evidence) : consumeExtra(task, record, evidence, false); }
           catch { task.partial = true; }
         }
         if (++consumed % 250 === 0) { onProgress?.(); await yieldThread(); }
+        if (limits.stopped?.() || consumed >= (limits.maxRecords || Infinity) || offset-batchStart >= (limits.maxBytes||Infinity)) { limited = true; break outer; }
       }
       if (pending.length > 32 * 1024 * 1024) throw new Error('单条记录超过 32MB，跳过并标记部分接入');
     }
   } finally { stream.destroy(); }
   // Do not commit an unfinished last line. The next append resumes from its beginning.
   task.evidence = { path: file, line: 1 };
-  task._parserVersion = PARSER_VERSION; task._sourceInode = stats.ino; task._unfinished = pending.length > 0;
-  return { task: finalize(task), stats, offset, line, unfinished: pending.length > 0, unchanged: false, reset: reset && Boolean(previous) };
+  task._parserVersion = PARSER_VERSION; task._sourceInode = stats.ino; task._unfinished = !limited && pending.length > 0; task._importPending = limited && offset < stats.size;
+  if(provider==='pi')rebuildPi(task);
+  return { task: finalize(task), stats, offset, line, unfinished: task._unfinished, unchanged: false, reset: reset && Boolean(previous) };
 }
 export function normalizeSourcePath(file){
   let normal=String(file);
@@ -61,24 +67,34 @@ export function normalizeSourcePath(file){
 function readonly(file) { const db = new DatabaseSync(file, { readOnly: true, timeout: 150 }); db.exec('PRAGMA query_only=ON;'); return db; }
 function safeRows(db, table) { try { return db.prepare(`SELECT * FROM ${table}`).all(); } catch { return []; } }
 function parsed(value) { try { return JSON.parse(value); } catch { return null; } }
-export async function readCompressed(file, previous, meta = {}) {
-  const stats = await stat(file);
-  const reset = !previous || previous.task._parserVersion !== PARSER_VERSION || previous.task._sourceInode !== stats.ino || stats.size < previous.offset || (stats.size === previous.size && stats.mtimeMs !== previous.mtime);
-  if (!reset && stats.size === previous.size && stats.mtimeMs === previous.mtime) return { unchanged: true, task: previous.task, stats, unfinished: previous.task._unfinished };
-  if (stats.size > 128 * 1024 * 1024) throw new Error('压缩日志超过当前读取上限');
-  const bytes = await readFile(file); const scanned = zstdFrames(bytes);
-  let task = reset ? emptyTask('deepseek', path.basename(path.dirname(file)), file, meta) : previous.task;
-  task._newEvents = [];task._newUsage=[]; let offset = reset ? 0 : previous.offset; let line = reset ? 0 : previous.line; let pending = reset ? '' : task._compressedPending || '';
-  for (const frame of scanned.frames) {
-    if (frame.end <= offset) continue;
-    pending += decodeFrame(bytes.subarray(frame.start, frame.end)); const rows = pending.split('\n'); pending = rows.pop();
-    for (const raw of rows) { line++; if (!raw.trim()) continue; try { task = consumeExtra(task, JSON.parse(raw), { path: file, line, locator: `frame=${frame.start}` }); } catch { task.partial = true; } }
-    offset = frame.end; await yieldThread();
-  }
-  task.evidence = { path: file, line: 1 }; task._compressedPending = pending;
-  task._parserVersion = PARSER_VERSION; task._sourceInode = stats.ino; task._unfinished = scanned.incomplete || Boolean(pending);
-  return { task: finalize(task), stats, offset, line, unfinished: task._unfinished, reset: reset && Boolean(previous) };
+export async function readCompressed(file, previous, meta = {}, limits = {}) {
+  const stats=await stat(file);
+  const reset=!previous||previous.task._parserVersion!==PARSER_VERSION||previous.task._sourceInode!==stats.ino||stats.size<previous.offset||(stats.size===previous.size&&stats.mtimeMs!==previous.mtime);
+  if(!reset&&stats.size===previous.size&&stats.mtimeMs===previous.mtime&&!previous.task._importPending)return {unchanged:true,task:previous.task,stats,unfinished:previous.task._unfinished};
+  let task=reset?emptyTask('deepseek',path.basename(path.dirname(file)),file,meta):previous.task;
+  task._newEvents=[];task._newUsage=[];
+  let offset=reset?0:previous.offset,line=reset?0:previous.line,pending=reset?'':task._compressedPending||'',encoded=Buffer.alloc(0),frames=0,limited=false;
+  const stream=createReadStream(file,{start:offset,highWaterMark:256*1024});
+  try{
+    outer:for await(const chunk of stream){
+      if(limits.stopped?.()){limited=true;break;}
+      encoded=Buffer.concat([encoded,chunk]);if(encoded.length>32*1024*1024)throw new Error('单个压缩帧超过 32 MiB 读取预算');
+      const scan=zstdFrames(encoded),base=offset;
+      for(const frame of scan.frames){
+        pending+=decodeFrame(encoded.subarray(frame.start,frame.end));if(pending.length>32*1024*1024)throw new Error('解压文本超过读取预算');
+        const rows=pending.split('\n');pending=rows.pop();
+        for(const raw of rows){line++;if(!raw.trim())continue;try{task=consumeExtra(task,JSON.parse(raw),{path:file,line,locator:`frame=${base+frame.start}`});}catch{task.partial=true;}}
+        offset=base+frame.end;frames++;await yieldThread();
+        if(limits.stopped?.()||frames>=(limits.maxFrames||Infinity)){limited=offset<stats.size;encoded=Buffer.alloc(0);break outer;}
+      }
+      encoded=encoded.subarray(scan.offset);
+    }
+  }finally{stream.destroy();}
+  task.evidence={path:file,line:1};task._compressedPending=pending;task._parserVersion=PARSER_VERSION;task._sourceInode=stats.ino;
+  task._importPending=limited;task._unfinished=(!limited&&encoded.length>0)||Boolean(pending);
+  return {task:finalize(task),stats,offset,line,unfinished:task._unfinished,reset:reset&&Boolean(previous)};
 }
+
 const databaseFailure = e => ['ECONNREFUSED','ECONNRESET','PROTOCOL_CONNECTION_LOST','POOL_CLOSED','ETIMEDOUT','EPIPE','ER_SERVER_SHUTDOWN'].includes(e.code);
 export class Collector {
   constructor(store, config, notify, onError = () => {}) {
@@ -102,7 +118,7 @@ export class Collector {
     if (!existsSync(file)) return;
     try {
       db = readonly(file);
-      for (const row of db.prepare('SELECT id,cwd,title,custom_title,created_at,updated_at FROM sessions WHERE deleted_at IS NULL').all()) {
+      for (const row of db.prepare('SELECT id,cwd,title,custom_title,created_at,updated_at FROM sessions WHERE deleted_at IS NULL').iterate()) {
         const meta = { nativeId: row.id, cwd: row.cwd || '', title: cleanText(row.custom_title || row.title || '',180), createdAt: epoch(row.created_at), updatedAt: epoch(row.updated_at), evidence: { path: file, locator: `sessions.id=${row.id}` } };
         this.workbuddyMeta.set(row.id, meta);
         const task = finalize(emptyTask('workbuddy', row.id, file, { ...meta, partial: true, surface: '桌面/CLI' }));
@@ -118,8 +134,9 @@ export class Collector {
       const candidates = entries.filter(name => /^state_\d+\.sqlite$/.test(name)).sort((a, b) => Number(b.match(/\d+/)[0]) - Number(a.match(/\d+/)[0]));
       if (!candidates.length) return;
       const file = path.join(this.config.codex, candidates[0]); db = readonly(file);
-      const rows = db.prepare('SELECT * FROM threads ORDER BY updated_at DESC').all();
+      const rows = db.prepare('SELECT * FROM threads ORDER BY updated_at DESC').iterate();
       for (const row of rows) {
+        if(this.stopped)break;
         const meta = { nativeId: row.id, title: cleanText(row.name || row.title || '',180), cwd: row.cwd || '', createdAt: epoch(row.created_at_ms || row.created_at), updatedAt: epoch(row.updated_at_ms || row.updated_at), archived: Boolean(row.archived), evidence: { path: file, locator: `threads.id=${row.id}` }, surface: /desktop|daybreak/i.test(row.originator || '') ? '桌面' : /cli/i.test(row.source || '') ? 'CLI' : /vscode/i.test(row.source || '') ? '编辑器' : '桌面/服务' };
         if (row.rollout_path) this.codexMeta.set(normalizeSourcePath(row.rollout_path), meta);
         const task = finalize(emptyTask('codex', row.id, file, meta));
@@ -146,76 +163,70 @@ export class Collector {
         db = readonly(file);
         const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => row.name);
         const headers = tables.includes('composerHeaders') ? safeRows(db, 'composerHeaders').map(row => ({ ...row, ...parsed(row.value) })) : [];
-        const bodies = new Map();
-        if (tables.includes('cursorDiskKV')) {
-          for (const row of db.prepare("SELECT key,value FROM cursorDiskKV WHERE key LIKE 'composerData:%'").all()) { const body = parsed(row.value); if (body) bodies.set(body.composerId || row.key.slice(13), body); }
-        }
         if (tables.includes('ItemTable')) {
-          for (const row of db.prepare("SELECT value FROM ItemTable WHERE key='composer.composerData'").all()) {
-            const data = parsed(row.value); for (const header of data?.allComposers || []) if (!headers.some(h => h.composerId === header.composerId)) headers.push(header);
+          for (const row of db.prepare("SELECT value FROM ItemTable WHERE key='composer.composerData'").iterate()) {
+            const data=parsed(row.value);for(const header of data?.allComposers||[])if(!headers.some(h=>h.composerId===header.composerId))headers.push(header);
           }
         }
-        for (const [id, body] of bodies) if (!headers.some(h => h.composerId === id)) headers.push({ composerId: id, createdAt: body.createdAt });
-        // Recent Cursor versions store message bodies separately from composerData.
-        const bubbles = new Map();
-        if (tables.includes('cursorDiskKV')) for (const row of db.prepare("SELECT key,value FROM cursorDiskKV WHERE key LIKE 'bubbleId:%'").all()) {
-          const key = row.key.match(/^bubbleId:([^:]+):(.+)$/); if (!key) continue;
-          if (!bubbles.has(key[1])) bubbles.set(key[1], new Map());
-          bubbles.get(key[1]).set(key[2], parsed(row.value));
+        const disk=tables.includes('cursorDiskKV'),ids=new Set(headers.map(h=>h.composerId));
+        if(disk){
+          for(const row of db.prepare("SELECT key FROM cursorDiskKV WHERE key LIKE 'composerData:%'").iterate()){const id=row.key.slice(13);if(!ids.has(id)){ids.add(id);headers.push({composerId:id});}}
+          for(const row of db.prepare("SELECT DISTINCT substr(key,10,instr(substr(key,10),':')-1) id FROM cursorDiskKV WHERE key LIKE 'bubbleId:%'").iterate())if(row.id&&!ids.has(row.id)){ids.add(row.id);headers.push({composerId:row.id});}
         }
-        for (const [id, messages] of bubbles) {
-          const body = bodies.get(id) || { composerId: id, _missingMetadata: true };
-          const inline = new Map(Object.entries(body.conversationMap || {}).filter(([,value])=>value&&typeof value==='object').map(([key, value]) => [value.bubbleId || value.id || key, value]));
-          const order = body.fullConversationHeadersOnly?.length ? body.fullConversationHeadersOnly : [...messages].map(([bubbleId, value]) => ({ bubbleId, createdAt: value?.createdAt })).sort((a,b) => epoch(a.createdAt)-epoch(b.createdAt));
-          const entries = []; const seen = new Set();
-          for (const header of order) { const entry = inline.get(header.bubbleId) || messages.get(header.bubbleId); seen.add(header.bubbleId); if (entry) entries.push({ ...header, ...entry, bubbleId: header.bubbleId }); else body._missingBubbles = true; }
-          for (const [bubbleId, entry] of inline) if (!seen.has(bubbleId)) entries.push(entry);
-          body.conversationMap = entries; bodies.set(id, body);
-          if (!headers.some(h=>h.composerId===id)) headers.push({composerId:id,createdAt:body.createdAt});
-        }
-        headersCount += headers.length;
-        for (const header of headers) {
-          const body = bodies.get(header.composerId); const task = cursorTask(header, body, file);
-          if (!task) { drafts++; continue; }
+        headersCount+=headers.length;
+        // Only one composer's body/messages reside in memory at a time.
+        for(const header of headers){
+          if(this.stopped)break;
+          let body=disk?parsed(db.prepare('SELECT value FROM cursorDiskKV WHERE key=?').get('composerData:'+header.composerId)?.value):null;
+          const messages=new Map();
+          if(disk){const prefix='bubbleId:'+header.composerId+':';for(const row of db.prepare('SELECT key,value FROM cursorDiskKV WHERE key>=? AND key<?').iterate(prefix,prefix+'\uffff'))messages.set(row.key.slice(prefix.length),parsed(row.value));}
+          if(messages.size){
+            body||={composerId:header.composerId,_missingMetadata:true};
+            const inline=new Map(Object.entries(body.conversationMap||{}).filter(([,value])=>value&&typeof value==='object').map(([key,value])=>[value.bubbleId||value.id||key,value]));
+            const order=body.fullConversationHeadersOnly?.length?body.fullConversationHeadersOnly:[...messages].map(([bubbleId,value])=>({bubbleId,createdAt:value?.createdAt})).sort((a,b)=>epoch(a.createdAt)-epoch(b.createdAt));
+            const entries=[],seen=new Set();
+            for(const h of order){const entry=inline.get(h.bubbleId)||messages.get(h.bubbleId);seen.add(h.bubbleId);if(entry)entries.push({...h,...entry,bubbleId:h.bubbleId});else body._missingBubbles=true;}
+            for(const [bubbleId,entry] of inline)if(!seen.has(bubbleId))entries.push(entry);body.conversationMap=entries;
+          }
+          const task=cursorTask(header,body,file);if(!task){drafts++;continue;}
           discovered.set(task.nativeId,(discovered.get(task.nativeId)??true)&&task.partial);if (task.partial) partialCount++;
-          const existing = this.store.get ? await this.store.get(task.id) : null;
+          const existing = this.store.get ? await this.store.get(task.id,false) : null;
           if (task.partial && existing && !existing.partial) { parsedCount++; continue; }
-          if(await this.store.upsert(finalize(task)))for(const e of task._newEvents||[])this.changedDates.add(new Date(e.timestamp+28800000).toISOString().slice(0,10));parsedCount++;
+          if(await this.store.upsert(finalize(task))){this.cursorChanged=true;for(const e of task._newEvents||[])this.changedDates.add(new Date(e.timestamp+28800000).toISOString().slice(0,10));}parsedCount++;await yieldThread();
         }
       } catch (e) { if(databaseFailure(e))throw e; errors++; }
       finally { db?.close(); }
       await yieldThread();
     }
     source.discoveredCount=discovered.size;parsedCount=discovered.size;partialCount=[...discovered.values()].filter(Boolean).length;if(errors)this.cursorFingerprint=null;source.locations = files; source.syncAt = Date.now();
-    source.state = errors === files.length ? 'error' : partialCount || errors || !parsedCount ? 'partial' : 'ready';
+    source.state = errors === files.length ? 'error' : errors ? 'partial' : 'ready';source.coverage=partialCount?'partial':'complete';source.partialSessions=partialCount;
     source.message = errors === files.length ? '数据库暂不可读，将自动重试' : `发现 ${headersCount} 个会话头；${parsedCount} 个可导入，${partialCount} 个缺少完整正文，${drafts} 个空草稿已排除${errors ? `，${errors} 个数据库暂不可读` : ''}。当前适配本机 SQLite 结构；未覆盖的正文不会补写。`;
   }
   async scan() {
-    if (this.busy || this.stopped) { this.dirty = true; return; } this.busy = true; this.dirty = false;this.metadataErrors={};
+    if (this.busy || this.stopped) { this.dirty = true; return; } this.busy = true; this.dirty = false;this.metadataErrors={}; const firstScan = !this.scanned;const sourceBefore=JSON.stringify(this.sources.map(({state,message,coverage})=>({state,message,coverage})));this.cursorChanged=false; let changed = 0;
     try {
       if (!this.config.disabled?.includes('codex')) await this.codexIndex();
       await this.workbuddyIndex(); const files = [];
       for (const [provider, roots] of [['codex', [path.join(this.config.codex, 'sessions'), path.join(this.config.codex, 'archived_sessions')]], ['claude', [path.join(this.config.claude, 'projects')]], ['pi', [path.join(this.config.pi, 'sessions')]], ['deepseek', [path.join(this.config.deepseek, 'sessions')]], ['workbuddy', [path.join(this.config.workbuddy, 'projects')]]]) {
         if (this.config.disabled?.includes(provider)) continue;
-        for (const root of roots) for await (const file of walk(root, '')) {
+        for (const root of roots) for await (const file of walk(root, '', () => this.stopped)) {
           if (!file.endsWith('.jsonl') && !(provider === 'deepseek' && file.endsWith('.jsonl.zstd'))) continue;
           try { const stats = await stat(file); files.push({ file, provider, stats }); } catch { /* Concurrent rotation: retry next cycle. */ }
         }
       }
       // Use recorded update timestamps when available, then mtime. Newest tasks become usable first.
       files.sort((a, b) => (this.codexMeta.get(b.file)?.updatedAt || b.stats.mtimeMs) - (this.codexMeta.get(a.file)?.updatedAt || a.stats.mtimeMs));
-      this.progress = { active: true, completed: 0, total: files.length }; this.notify();
+      this.progress = { active: true, completed: 0, total: files.length };
       const errors = Object.fromEntries(this.sources.map(s => [s.id,0])); const partial = {...errors};
-      let changed = 0;
       for (const item of files) {
         if (this.stopped) break;
         const subagent = item.provider === 'claude' && item.file.split(path.sep).includes('subagents');
         const meta = this.codexMeta.get(item.file) || { archived: item.file.includes('archived_sessions'), surface: subagent ? '子代理' : item.provider === 'claude' ? 'CLI' : '未知入口', ...(subagent ? { subagentId: path.basename(item.file, '.jsonl') } : {}) };
         try {
           const header=await this.store.checkpointHeader?.(item.file);const metaTitle=this.store.scrub?.({title:meta.title}).title||meta.title;
-          if(item.provider!=='workbuddy'&&header&&Number(header.version)===PARSER_VERSION&&Number(header.inode)===item.stats.ino&&Number(header.size)===item.stats.size&&header.mtime===item.stats.mtimeMs&&(!metaTitle||header.title===metaTitle)&&(meta.archived===undefined||(header.archived==='true')===meta.archived)){if(header.partial==='true'||header.unfinished==='true')partial[item.provider]++;this.progress.completed++;await yieldThread();continue;}
+          if(item.provider!=='workbuddy'&&header&&header.importPending!=='true'&&Number(header.version)===PARSER_VERSION&&Number(header.inode)===item.stats.ino&&Number(header.size)===item.stats.size&&header.mtime===item.stats.mtimeMs&&(!metaTitle||header.title===metaTitle)&&(meta.archived===undefined||(header.archived==='true')===meta.archived)){if(header.partial==='true'||header.unfinished==='true')partial[item.provider]++;this.progress.completed++;await yieldThread();continue;}
           const previous = await this.store.checkpoint(item.file);
-          const result = item.file.endsWith('.zstd') ? await readCompressed(item.file, previous, meta) : await readLog(item.file, item.provider, previous, meta);
+          const result = item.file.endsWith('.zstd') ? await readCompressed(item.file, previous, meta,{maxFrames:1,stopped:()=>this.stopped}) : await readLog(item.file, item.provider, previous, meta, undefined, { maxRecords: 1000, maxBytes: 4 * 1024 * 1024, stopped: () => this.stopped });
           if (item.provider === 'workbuddy') {
             const details = this.workbuddyMeta?.get(result.task.nativeId);
             if (details) { if((details.title&&details.title!==result.task.title)||(details.cwd&&details.cwd!==result.task.cwd)||details.updatedAt>result.task.updatedAt)result.unchanged=false;result.task.title = details.title || result.task.title; result.task.cwd = details.cwd || result.task.cwd;result.task.updatedAt=Math.max(result.task.updatedAt,details.updatedAt); }
@@ -224,7 +235,7 @@ export class Collector {
             if (JSON.stringify(todos) !== JSON.stringify(result.task.todos)) { result.task.todos = todos; result.unchanged = false; }
             result.task = finalize(result.task);
           }
-          if (['workbuddy','deepseek'].includes(item.provider) && !result.task.goal && !result.task.summary && !result.task.partial) { result.task.partial = true; result.unchanged = false; }
+          if (['workbuddy'].includes(item.provider) && !result.task.goal && !result.task.summary && !result.task.partial) { result.task.partial = true; result.unchanged = false; }
           if (!result.unchanged) {
             await this.store.transaction(async tx => {
               if(item.provider==='codex'&&result.reset&&previous&&previous.task.id!==result.task.id){
@@ -234,7 +245,7 @@ export class Collector {
                 const parent=[...this.codexMeta.entries()].find(([file,meta])=>meta.nativeId===previous.task.nativeId&&file!==item.file);
                 if(parent&&existsSync(parent[0])){const restored=await readLog(parent[0],'codex',null,parent[1]);await tx.upsert(restored.task,true);await tx.saveCheckpoint(parent[0],restored.stats,restored.offset,restored.line,restored.task);}
               }
-              const sameSource = (await tx.get(result.task.id))?.evidence.path === item.file;
+              const sameSource = (await tx.get(result.task.id,false))?.evidence.path === item.file;
               await tx.upsert(result.task, result.reset && sameSource);
               await tx.saveCheckpoint(item.file, result.stats, result.offset, result.line, result.task);
             });
@@ -254,14 +265,15 @@ export class Collector {
         if(this.metadataErrors[id])source.message+=' 会话索引元数据暂不可读，将继续重试。';source.syncAt = Date.now();
       }
       if (!this.config.disabled?.includes('cursor')) await this.cursorIndex();
-    } finally { this.progress.active = false; this.busy = false; this.notify({dates:[...this.changedDates]});this.changedDates.clear(); }
+    } finally { this.progress.active = false; this.busy = false; if(firstScan || changed || this.cursorChanged || this.changedDates.size || sourceBefore!==JSON.stringify(this.sources.map(({state,message,coverage})=>({state,message,coverage})))) this.notify({dates:[...this.changedDates],changed:changed>0 || this.cursorChanged || this.changedDates.size>0,initial:firstScan});this.scanned=true;this.changedDates.clear(); }
   }
   async start() {
+    if(this.store.collectionLease){this.releaseLease=await this.store.collectionLease();if(this.stopped){await this.releaseLease?.();this.releaseLease=null;return;}if(!this.releaseLease){for(const s of this.sources){s.state='paused';s.message='另一个 AgentDock 窗口正在采集，本窗口仅浏览记录';}this.leaseBlocked=true;this.notify();return;}}
     for (const root of [path.join(this.config.codex, 'sessions'), path.join(this.config.codex, 'archived_sessions'), path.join(this.config.claude, 'projects'), path.join(this.config.pi,'sessions'), path.join(this.config.deepseek,'sessions'), path.join(this.config.workbuddy,'projects')]) {
       try { const watcher = watch(root, { recursive: true }, () => { this.dirty = true; }); watcher.on('error', () => { this.dirty = true; }); this.watchers.push(watcher); } catch { /* Polling also handles roots created after startup. */ }
     }
-    this.timer = setInterval(() => { void this.scan().catch(e => { this.onError(e); this.notify(); }); }, 3000);
+    this.timer = setInterval(() => { void this.scan().catch(e => { this.onError(e); this.notify(); }); }, (this.config.intervalSeconds || 60) * 1000);
     await this.scan();
   }
-  async stop() { this.stopped = true; clearInterval(this.timer); this.watchers.forEach(w => w.close()); while(this.busy) await new Promise(resolve=>setTimeout(resolve,20)); }
+  async stop() { this.stopped = true; clearInterval(this.timer);clearTimeout(this.leaseRetry); this.watchers.forEach(w => w.close()); while(this.busy) await new Promise(resolve=>setTimeout(resolve,20)); this.codexMeta.clear(); this.workbuddyMeta?.clear(); this.watchers=[]; await this.releaseLease?.(); this.releaseLease=null; }
 }

@@ -1,3 +1,4 @@
+import {validateAvatar} from './avatar.mjs';
 import { scrypt, randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 const derive = promisify(scrypt),
@@ -43,7 +44,7 @@ const publicUser = (u) =>
         createdAt: Number(u.created_at),
       }
     : null;
-export async function authStatus(store, token = "") {
+export async function authStatus(store, token = "", profile = true) {
   if (!store) return { available: false, initialized: false, user: null };
   const [owner] = await store.rows("SELECT id FROM ad_users LIMIT 1");
   const [user] = token
@@ -55,7 +56,7 @@ export async function authStatus(store, token = "") {
   return {
     available: true,
     initialized: Boolean(owner),
-    user: publicUser(user),
+    user: user ? {...publicUser(user),...(profile?{avatar:(await store.document(`avatar-${user.id}`,'profile'))?.avatar||''}:{})} : null,
   };
 }
 export async function createOwner(store, input) {
@@ -129,6 +130,7 @@ export async function account(store, { token, action, ...input }) {
       expiresAt: Number(s.expires_at),
       current: s.token_hash === tokenHash(token),
     }));
+  if (action === "avatar") {await store.putDocument('profile',{id:`avatar-${id}`,title:'个人头像',avatar:validateAvatar(input.avatar)});return (await authStatus(store,token)).user;}
   if (action === "profile") {
     const name = String(input.displayName || "").trim();
     if (!name || name.length > 100)

@@ -21,7 +21,7 @@ function preferences(){try{return JSON.parse(fs.readFileSync(path.join(app.getPa
 function show(){if(win){win.show();win.focus();}}
 function trayMenu(paused=false){tray?.setContextMenu(Menu.buildFromTemplate([
  {label:'打开 AgentDock',click:show},
- {label:paused?'恢复采集':'暂停采集',click:async()=>{try{const r=await backend('/api/collection/pause',{paused:!paused});trayMenu(r.paused);}catch{void dialog.showMessageBox(win,{message:'服务暂不可用，请在设置中检查连接。'});}}},
+ {label:paused?'恢复采集':'暂停采集',click:async()=>{try{const state=await backend('/api/collection');const r=await backend('/api/collection/pause',{paused:!state.paused});trayMenu(r.paused);}catch{void dialog.showMessageBox(win,{message:'服务暂不可用，请在设置中检查连接。'});}}},
  {type:'separator'},{label:'退出',click:()=>app.quit()}
 ]));}
 async function backend(url,body,method='POST'){
@@ -104,7 +104,8 @@ async function stopBackend(){
 }
 async function showFailure(){if(!win||quitting)return;await win.loadURL('data:text/html;charset=utf-8,'+encodeURIComponent('<meta charset="utf-8"><title>AgentDock</title><body style="font:18px system-ui;padding:48px"><h1>本地服务暂不可用</h1><p>配置与 MySQL 数据均已保留。请重试或重新启动应用。</p><button onclick="window.agentdock.retry()">重新启动服务</button></body>'));show();}
 async function remind(){
- if(!origin||!preferences().notifications||!Notification.isSupported())return;
+ if(!origin)return;try{const state=await backend('/api/collection');trayMenu(state.paused);}catch{}
+ if(!preferences().notifications||!Notification.isSupported())return;
  try{for(const s of await backend('/api/reminders')){
   const claim=await backend(`/api/reminders/${encodeURIComponent(s.id)}/claim`,{owner:'desktop'});if(!claim.claimed)continue;
   const n=new Notification({title:'AgentDock 日程提醒',body:s.title});

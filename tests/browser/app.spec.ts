@@ -21,7 +21,7 @@ test('real adapters, filtering, editing, linking, export and reload', async ({ p
 });
 test('source coverage, projects and empty searches', async ({ page }) => {
   await page.goto('/'); await page.getByRole('button', { name: '工具接入', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '来源连接' })).toBeVisible(); await expect(page.getByText('未找到记录', { exact: true })).toHaveCount(3);
+  await expect(page.getByRole('heading', { name: '来源连接' })).toBeVisible(); await expect(page.getByText('未找到记录', { exact: true })).toHaveCount(2); await page.getByRole('navigation',{name:'来源连接分页'}).getByRole('button',{name:'下一页'}).click(); await expect(page.getByText('未找到记录',{exact:true})).toHaveCount(1);
   await page.getByRole('button', { name: '项目空间', exact: true }).click(); await expect(page.getByRole('heading', { name: 'sample-project' })).toBeVisible();
   await page.getByRole('button', { name: /sample-project/ }).click(); await page.getByLabel('搜索任务').fill('不存在的任务xyz'); await expect(page.getByText('没有匹配的任务')).toBeVisible();
 });

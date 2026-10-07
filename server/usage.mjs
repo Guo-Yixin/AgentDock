@@ -1,3 +1,5 @@
+import {referenceBudgets} from './price-catalogue.mjs';
+import {compactTitle} from './presentation.mjs';
 import {historyOverview} from './usage-history.mjs';
 import { createHash, randomUUID } from "node:crypto";
 const hash = (value) =>
@@ -587,7 +589,7 @@ export async function usageOverview(store, args = {}) {
   );
   const global = filters({ ...args, start: 0, end: Date.now() + 86400000 });
   const activity = await store.rows(
-    `SELECT FLOOR((recorded_at+28800000)/86400000) day,COALESCE(SUM(total_tokens),0) total FROM ad_usage WHERE ${global.sql} GROUP BY day ORDER BY day`,
+    `SELECT FLOOR((recorded_at+28800000)/86400000) day,COALESCE(SUM(total_tokens),0) total FROM ad_usage WHERE ${global.sql} AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(record,'$.mode')),'')<>'manual' GROUP BY day ORDER BY day`,
     global.params,
   );
   let longest = 0,
@@ -609,9 +611,10 @@ export async function usageOverview(store, args = {}) {
   const history = await historyOverview(store,args);
   const lifetimeTools = await store.rows(`SELECT provider,model,${aggregate} FROM ad_usage WHERE ${global.sql} GROUP BY provider,model ORDER BY total DESC`,global.params);
   for(const r of history.config?.enabled?history.config.allocations:[])if(!options.some(o=>o.provider===r.provider&&o.model===r.model))options.push({provider:r.provider,model:r.model});
+  const manualHeatmap=(await store.rows(`SELECT FLOOR((recorded_at+28800000)/86400000) day,SUM(total_tokens) total FROM ad_usage WHERE ${global.sql} AND JSON_UNQUOTE(JSON_EXTRACT(record,'$.mode'))='manual' GROUP BY day`,global.params)).map(numeric);
   const profile = {
-    total: activity.reduce((s, d) => s + Number(d.total), 0)+history.total,
-    measuredTotal:activity.reduce((s,d)=>s+Number(d.total),0),
+    total: lifetimeTools.reduce((s,d)=>s+Number(d.total),0)+history.total,
+    measuredTotal:lifetimeTools.reduce((s,d)=>s+Number(d.total),0),
     historicalTotal:history.total,
     peak: Math.max(0, ...activity.map((d) => Number(d.total))),
     longest,
@@ -621,7 +624,7 @@ export async function usageOverview(store, args = {}) {
   return {
     summary: numeric(summary),
     days: days.map(numeric),
-    tools: tools.map(numeric),
+    tools: tools.map(numeric),referenceBudgets:referenceBudgets(tools.map(numeric)),
     coverage: numeric(coverage),
     costs,
     costDays,
@@ -629,7 +632,7 @@ export async function usageOverview(store, args = {}) {
     prices,
     options,
     profile,
-    history,
+    history,manualHeatmap,
     lifetimeTools:lifetimeTools.map(numeric),
     heatmap: activity
       .filter((d) => Number(d.day) >= today - 364)
@@ -638,13 +641,13 @@ export async function usageOverview(store, args = {}) {
 }
 export async function usageRecords(store, args) {
   const f = filters(args, "u"),
-    page = Math.max(1, Number(args.page) || 1);
+    page = Math.max(1, Math.floor(Number(args.page) || 1)), size = Math.min(30,Math.max(1,Math.floor(Number(args.pageSize)||30)));
   const [count] = await store.rows(
     `SELECT COUNT(*) total FROM ad_usage u WHERE ${f.sql}`,
     f.params,
   );
   const rows = await store.rows(
-    `SELECT u.*,t.record task_record FROM ad_usage u LEFT JOIN ad_tasks t ON t.id=u.task_id WHERE ${f.sql} ORDER BY u.recorded_at DESC,u.id DESC LIMIT 30 OFFSET ${(page - 1) * 30}`,
+    `SELECT u.*,JSON_UNQUOTE(JSON_EXTRACT(t.record,'$.title')) task_title,JSON_UNQUOTE(JSON_EXTRACT(t.record,'$.projectName')) task_project FROM ad_usage u LEFT JOIN ad_tasks t ON t.id=u.task_id WHERE ${f.sql} ORDER BY u.recorded_at DESC,u.id DESC LIMIT ${size} OFFSET ${(page - 1) * size}`,
     f.params,
   );
   return {
@@ -654,16 +657,14 @@ export async function usageRecords(store, args) {
       const record =
           typeof r.record === "string" ? JSON.parse(r.record) : r.record,
         task =
-          typeof r.task_record === "string"
-            ? JSON.parse(r.task_record)
-            : r.task_record;
+          {title:r.task_title,projectName:r.task_project};
       return {
         ...record,
         id: r.id,
         taskId: r.task_id,
         provider: r.provider,
         model: r.model,
-        title: task?.title || "AgentDock 助手分析",
+        title: compactTitle(task?.title||(record.mode==='manual'?'手动补录':"AgentDock 助手分析"),'',task?.projectName),
         project: task?.projectName || "未归属项目",
         timestamp: Number(r.recorded_at),
         input: r.input_tokens === null ? null : Number(r.input_tokens),

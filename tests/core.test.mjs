@@ -78,7 +78,7 @@ test('Collector reads Cursor sources without changing database contents', async 
   db.prepare('INSERT INTO composerHeaders VALUES(?,?)').run('cursor-id', JSON.stringify({ composerId: 'cursor-id', createdAt: Date.now(), workspaceIdentifier: dir })); db.close();
   const checksum = () => createHash('sha256').update(readFileSync(file)).digest('hex'); const before = checksum();
   const values = new Map(); const store = { upsert: async t => values.set(t.id,t), all: () => [...values.values()], close: () => {} }; const collector = new Collector(store, { home: dir, codex: dir, claude: dir, cursor: path.join(dir, 'Cursor') }, () => {});
-  await collector.cursorIndex(); assert.equal(checksum(), before); assert.equal(collector.source('cursor').state, 'partial'); assert.equal(store.all().length, 1); store.close();
+  await collector.cursorIndex(); assert.equal(checksum(), before); assert.equal(collector.source('cursor').state, 'ready'); assert.equal(collector.source('cursor').coverage,'partial'); assert.equal(store.all().length, 1); store.close();
 });
 test('Project grouping resolves repository subfolders and UTC+8 midnight', () => {
   const dir = temp(); mkdirSync(path.join(dir, '.git')); mkdirSync(path.join(dir, 'src'));

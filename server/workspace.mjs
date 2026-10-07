@@ -21,7 +21,7 @@ export async function generateReport(store, { kind = 'daily', date, project = ''
   completed.forEach(row => ids.add(row.task_id));
   const items = [];
   for (const taskId of ids) {
-    const task = await store.get(taskId); if (!task || (project && project !== task.projectId) || (provider && provider !== task.provider)) continue;
+    const task = await store.get(taskId,false); if (!task || (project && project !== task.projectId) || (provider && provider !== task.provider)) continue;
     const activity = events.filter(e => e.taskId === taskId); const last = [...activity].reverse().find(e => e.kind === 'assistant');
     items.push({ taskId, title: task.title, projectName: task.projectName, provider: task.provider, summary: last?.text || activity.find(e => e.kind === 'user')?.text || '本期用户确认完成', evidence: last?.evidence || activity[0]?.evidence || task.evidence, confirmed: completed.some(r => r.task_id === taskId), reported: task.completion === 'reported_complete' && task.updatedAt >= range.start && task.updatedAt < range.end, blocked: task.completion === 'blocked', todos: task.todos, activityCount: activity.length });
   }
@@ -38,10 +38,10 @@ export async function generateReport(store, { kind = 'daily', date, project = ''
 export function reportMarkdown(report) {
   return `# ${report.title}\n\n时区：Asia/Shanghai\n\n${report.facts.goalsConfirmed||0} 个工作目标本期确认完成 · ${report.facts.activityCount} 条本期活动 · ${report.facts.confirmed} 项用户确认完成 · ${report.facts.reported} 项来源报告完成\n\n## 进展与依据\n\n${report.facts.items.map(i => `### ${i.title}\n\n${i.summary}\n\n来源：${i.provider} / ${i.projectName} · ${i.evidence.path}:${i.evidence.line || ''}${i.evidence.locator ? ' · ' + i.evidence.locator : ''}\n\n状态：${i.confirmed ? '用户确认完成' : i.reported ? '来源报告完成，待验证' : '未确认完成'}\n\n当前待办快照：\n${i.todos.map(t => `- [${t.status === 'completed' ? 'x' : ' '}] ${t.text}`).join('\n') || '无结构化待办'}\n`).join('\n') || '本期无可解析活动。'}\n\n## 我的补充\n\n${report.userText || '无'}\n\n${report.versions.map(v => `## AI 分析 · ${v.model}\n\n${v.text}\n\n生成时间：${new Date(v.createdAt).toISOString()}`).join('\n\n')}`;
 }
-export async function refreshReports(store, history = false) {
+export async function refreshReports(store, history = false, stopped = () => false) {
   const dateFor = timestamp => new Date(timestamp + 28800000).toISOString().slice(0, 10);
-  for (let i = 0; i < (history ? 30 : 1); i++) { const date = dateFor(dayStart() - i * 86400000); await generateReport(store, { date }); if (history && i % 7 === 0) await generateReport(store, { date, kind: 'weekly' }); }
-  await generateReport(store, { date: dateFor(Date.now()), kind: 'weekly' });
+  for (let i = 0; i < (history ? 30 : 1); i++) { if(stopped())return; const date = dateFor(dayStart() - i * 86400000); await generateReport(store, { date }); if (history && i % 7 === 0) await generateReport(store, { date, kind: 'weekly' }); }
+  if(!stopped())await generateReport(store, { date: dateFor(Date.now()), kind: 'weekly' });
 }
 export function validateSchedule(input) {
   let start = Number(input.start), end = Number(input.end);
@@ -54,10 +54,10 @@ export async function migrateLegacy(store, file) {
   const source = new DatabaseSync(file, { readOnly: true }); source.exec('PRAGMA query_only=ON;');
   const status = await store.document('legacy-migration', 'migration') || { id: 'legacy-migration', title: 'SQLite 迁移', tasks: 0, annotations: 0, checkpoints: 0 };
   try {
-    for (const row of source.prepare('SELECT * FROM tasks').all()) await store.transaction(async tx => { if (!await tx.get(row.id)) await tx.upsert(decode(row.record)); });
-    for (const row of source.prepare('SELECT * FROM annotations').all()) await store.rows('INSERT IGNORE INTO ad_annotations VALUES(?,?,?)', [row.task_id, row.value, row.updated_at]);
+    for (const row of source.prepare('SELECT * FROM tasks').iterate()) await store.transaction(async tx => { if (!await tx.get(row.id)) await tx.upsert(decode(row.record)); });
+    for (const row of source.prepare('SELECT * FROM annotations').iterate()) await store.rows('INSERT IGNORE INTO ad_annotations VALUES(?,?,?)', [row.task_id, row.value, row.updated_at]);
     // Parser-version bump forces full activity backfill, preserving stable task identities.
-    for (const row of source.prepare('SELECT * FROM checkpoints').all()) {
+    for (const row of source.prepare('SELECT * FROM checkpoints').iterate()) {
       if (await store.checkpoint(row.path)) continue;
       await store.saveCheckpoint(row.path, { size: row.size, mtimeMs: row.mtime }, row.offset, row.line, decode(row.state));
     }
@@ -74,21 +74,21 @@ export async function buildContext(store, refs, range = {}) {
     let text = '', title = '', evidence = null;
     if(ref.type==='goal'){const goal=await goalGet(store,ref.id);if(!goal)throw new Error('目标不存在');title=goal.title;text=JSON.stringify({title,status:goal.status,description:goal.description,note:goal.note,sessions:goal.sessions.map(t=>({id:t.id,title:t.title,summary:t.annotation.summaryOverride||t.summary,todos:t.todos,note:t.annotation.note,evidence:t.summaryEvidence||t.evidence}))});}
     else if (ref.type === 'task') {
-      const t = await store.get(ref.id); if (!t) throw new Error('所选会话不存在');
+      const t = await store.get(ref.id,Boolean(ref.includeTranscript||ref.branchId)); if (!t) throw new Error('所选会话不存在');
       const branch = ref.branchId ? t.branches?.find(b => b.id === ref.branchId) : t.branches?.find(b => b.id === t.annotation.branchId);
       if(ref.branchId&&!branch)throw new Error('所选分支不存在');title = t.title; evidence = branch?.summaryEvidence||t.summaryEvidence||t.evidence;
       text = JSON.stringify({ title, goal: branch?.goal || t.goal, summary: t.annotation.summaryOverride || branch?.summary || t.summary, completion: t.completion, todos: t.todos, note: t.annotation.note });
-      if (ref.includeTranscript) { const [count] = await store.rows('SELECT COUNT(*) n FROM ad_events WHERE task_id=? AND timestamp>=? AND timestamp<?',[t.id,range.start??Date.now()-30*86400000,range.end??Date.now()+1]);if(!branch&&Number(count.n)>100000)throw new Error('正文记录过多，请缩小日期范围');const events = branch?.events || await store.events({ task: t.id, start: range.start ?? Date.now() - 30 * 86400000, end: range.end ?? Date.now() + 1, limit: 100000 }); text += '\n正文：\n' + events.filter(e => ['user', 'assistant'].includes(e.kind)&&e.timestamp>=(range.start??Date.now()-30*86400000)&&e.timestamp<(range.end??Date.now()+1)).map(e => `${e.kind}: ${e.text}`).join('\n'); }
+      if (ref.includeTranscript) { const [count] = await store.rows("SELECT COUNT(*) n,COALESCE(SUM(CHAR_LENGTH(JSON_UNQUOTE(JSON_EXTRACT(record,'$.text')))),0) characters FROM ad_events WHERE task_id=? AND timestamp>=? AND timestamp<? AND JSON_UNQUOTE(JSON_EXTRACT(record,'$.kind')) IN ('user','assistant')",[t.id,range.start??Date.now()-30*86400000,range.end??Date.now()+1]);if(!branch&&(Number(count.n)>100000||Number(count.characters)>48000-text.length))throw new Error('正文记录过多，请缩小日期范围');const events = branch?.events || await store.events({ task: t.id, start: range.start ?? Date.now() - 30 * 86400000, end: range.end ?? Date.now() + 1, limit: 100000,messagesOnly:true }); if(events.reduce((n,e)=>n+e.text.length,0)>48000-text.length)throw new Error('正文超过预览预算，请缩小范围');text += '\n正文：\n' + events.filter(e => ['user', 'assistant'].includes(e.kind)&&e.timestamp>=(range.start??Date.now()-30*86400000)&&e.timestamp<(range.end??Date.now()+1)).map(e => `${e.kind}: ${e.text}`).join('\n'); }
     }
     if (ref.type === 'project') {
       const tasks = await store.rows('SELECT t.id FROM ad_tasks t WHERE project_id=? AND (EXISTS(SELECT 1 FROM ad_events e WHERE e.task_id=t.id AND e.timestamp>=? AND e.timestamp<?) OR (t.updated_at>=? AND t.updated_at<?)) ORDER BY t.updated_at DESC', [ref.id, range.start ?? Date.now() - 30 * 86400000, range.end ?? Date.now() + 1, range.start ?? Date.now() - 30 * 86400000, range.end ?? Date.now() + 1]);
       if (!tasks.length) throw new Error('该项目在指定范围内没有记录');
-      const texts = []; for (const row of tasks) { const t = await store.get(row.id); title = t.projectName; const [reply]=await store.rows("SELECT record FROM ad_events WHERE task_id=? AND timestamp>=? AND timestamp<? AND JSON_UNQUOTE(JSON_EXTRACT(record,'$.kind'))='assistant' ORDER BY timestamp DESC LIMIT 1",[t.id,range.start??Date.now()-30*86400000,range.end??Date.now()+1]); const summary=reply?decode(reply.record).text:'本期无可解析回复';texts.push(JSON.stringify({ id: t.id, title: t.title, summary, userSummary: t.annotation.summaryOverride, completion: t.completion, todos: t.todos, note: t.annotation.note })); }
+      const texts = []; for (const row of tasks) { const t = await store.get(row.id,false); title = t.projectName; const [reply]=await store.rows("SELECT record FROM ad_events WHERE task_id=? AND timestamp>=? AND timestamp<? AND JSON_UNQUOTE(JSON_EXTRACT(record,'$.kind'))='assistant' ORDER BY timestamp DESC LIMIT 1",[t.id,range.start??Date.now()-30*86400000,range.end??Date.now()+1]); const summary=reply?decode(reply.record).text:'本期无可解析回复';texts.push(JSON.stringify({ id: t.id, title: t.title, summary, userSummary: t.annotation.summaryOverride, completion: t.completion, todos: t.todos, note: t.annotation.note }));if(texts.reduce((n,s)=>n+s.length,0)>48000)throw new Error('项目内容超过预览预算，请缩小日期范围'); }
       text = texts.join('\n');
     }
     if (ref.type === 'report' || ref.type === 'schedule') { const d = await store.document(ref.id, ref.type); if (!d) throw new Error('所选对象不存在'); title = d.title; text = ref.type === 'report' ? reportMarkdown(d) : JSON.stringify({ title, note: d.note, start: d.start, end: d.end, done: d.done }); }
     if (ref.type === 'memory' || ref.type === 'workflow') { const d = await store.document(ref.id, ref.type); if (!d || d.status === 'archived') throw new Error('所选记忆或工作流不存在或已归档'); title = d.title; text = JSON.stringify(ref.type === 'memory' ? {title, text:d.text, category:d.category, status:d.status, reviewedAt:d.reviewedAt, refs:d.refs} : {title, status:d.status, steps:d.steps, refs:d.refs}); }
-    const number = sources.length + 1; sources.push({ ...ref, number, title, evidence }); parts.push(`[${number}] ${title}\n${text}`);
+    const number = sources.length + 1; sources.push({ ...ref, number, title, evidence }); parts.push(`[${number}] ${title}\n${text}`);if(parts.reduce((n,p)=>n+p.length+2,0)>48000)throw new Error('上下文超过 48000 字符，请缩小范围或取消正文');
   }
   const text = parts.join('\n\n'); if (text.length > 48000) throw new Error('上下文超过 48000 字符，请缩小范围或取消正文');
   return { id: randomUUID(), sources, text, characters: text.length, estimatedTokens: Math.ceil(text.length / 2), createdAt: Date.now(), expiresAt: Date.now() + 15 * 60000 };

@@ -5,6 +5,7 @@ export interface Todo { text: string; status: string }
 export interface TaskEvent { timestamp: number; kind: string; text: string; evidence: Evidence }
 export interface Annotation { note: string; summaryOverride: string | null; manualStatus: Exclude<Completion, 'reported_complete'> | null; goalGroup: string; pinned: boolean; branchId?: string; needsReview?: boolean }
 export interface Task {
+  importPending?:boolean;originalTitle?:string;displaySummary?:string;
   id: string; nativeId: string; provider: Provider; surface: string; title: string; goal: string;
   projectId: string; projectName: string; cwd: string; createdAt: number; updatedAt: number;
   activity: 'recent' | 'responded' | 'interrupted' | 'unknown'; completion: Completion;

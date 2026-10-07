@@ -4,7 +4,7 @@ import path from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 
 export const hash = value => createHash('sha256').update(value).digest('hex').slice(0, 24);
-export const PARSER_VERSION = 8;
+export const PARSER_VERSION = 9;
 export function epoch(value, fallback = 0) {
   if (typeof value === 'number') return value < 1e11 ? value * 1000 : value;
   const result = Date.parse(value); return Number.isFinite(result) ? result : fallback;

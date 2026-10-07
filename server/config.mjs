@@ -6,17 +6,21 @@ import { spawnSync } from 'node:child_process';
 if (process.env.AGENTDOCK_DESKTOP!=='1' && existsSync('.env')) process.loadEnvFile('.env');
 export const dataDir = path.resolve(process.env.AGENTDOCK_DATA || 'data');
 const file = path.join(dataDir, 'settings.local.json');
+const decrypted = new Map();
 export function loadSettings() { try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return { sources: {}, model: 'deepseek-flash' }; } }
 export function saveSettings(value) {
+  decrypted.clear();
   mkdirSync(dataDir, { recursive: true });
   writeFileSync(file + '.tmp', JSON.stringify(value, null, 2), { mode: 0o600 }); renameSync(file + '.tmp', file);
 }
 export function protect(value, decrypt = false) {
   if (process.platform !== 'win32') throw new Error('此平台请使用环境变量配置凭据');
+  if(decrypt&&decrypted.has(value))return decrypted.get(value);
   // A fixed script receives secrets through stdin, never through command arguments.
   const script = `[Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); Add-Type -AssemblyName System.Security; $v=[Console]::In.ReadToEnd(); $b=${decrypt ? '[Convert]::FromBase64String($v)' : '[Text.Encoding]::UTF8.GetBytes($v)'}; $r=[Security.Cryptography.ProtectedData]::${decrypt ? 'Unprotect' : 'Protect'}($b,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser); [Console]::Out.Write(${decrypt ? '[Text.Encoding]::UTF8.GetString($r)' : '[Convert]::ToBase64String($r)'})`;
   const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { input: value, encoding: 'utf8', windowsHide: true, timeout: 15000 });
   if (result.status !== 0) throw new Error('Windows 凭据加密操作失败，请重新配置');
+  if(decrypt){if(decrypted.size>=4)decrypted.clear();decrypted.set(value,result.stdout);}
   return decrypt ? result.stdout : result.stdout.trim();
 }
 export function mysqlConfig(settings = loadSettings()) {
