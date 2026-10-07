@@ -10,9 +10,15 @@ const env={...process.env,AGENTDOCK_DESKTOP_TEST:'synthetic',AGENTDOCK_DESKTOP_T
 for(const key of Object.keys(env))if(key.startsWith('AGENTDOCK_MYSQL_')||['AGENTDOCK_DEEPSEEK_API_KEY','DEEPSEEK_API_KEY','AGENTDOCK_SESSION_TOKEN'].includes(key))delete env[key];
 const exe=process.env.AGENTDOCK_DESKTOP_EXE;if(exe&&!['release','artifacts'].some(dir=>path.resolve(exe).startsWith(path.resolve(dir)+path.sep)))throw new Error('只允许测试工作区内的桌面程序');
 let desktop,url;
+// Navigate through the visible group toggle on small CI desktops as a user would.
+async function navigate(window,name){
+ const nav=window.getByRole('navigation',{name:'主导航'}),target=nav.getByRole('button',{name,exact:true,includeHidden:true});
+ if(!await target.isVisible())await target.locator('xpath=ancestor::section[contains(@class,"nav-group")]').locator('.nav-group-toggle').click();
+ await target.click();
+}
 try{
  console.log('启动桌面应用');desktop=await _electron.launch({...(exe?{executablePath:exe,args:[]}:{args:['desktop/main.cjs']}),env,timeout:60000});
- console.log('桌面进程已连接');const window=await desktop.firstWindow();await window.waitForURL('http://127.0.0.1:*/**',{timeout:60000});url=new URL(window.url()).origin;
+ console.log('桌面进程已连接');const window=await desktop.firstWindow();await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(1200,740));await window.waitForURL('http://127.0.0.1:*/**',{timeout:60000});url=new URL(window.url()).origin;
  await expect(window.getByText('配置数据库',{exact:true})).toBeVisible();
  const prefs=await window.evaluate(()=>window.agentdock.preferences());expect(prefs).toEqual({autoStart:false,notifications:false});
  expect(await window.evaluate(()=>typeof window.require)).toBe('undefined');
@@ -23,9 +29,9 @@ try{
  await window.getByRole('button',{name:'查看演示体验',exact:true}).click();await expect(window.getByText(/演示模式 · 所有任务/)).toBeVisible();
  await window.getByLabel('界面主题').selectOption('dark');await expect(window.locator('html')).toHaveAttribute('data-theme','dark');
  await window.getByRole('button',{name:/查看跨工具任务流/}).click();await expect.poll(()=>window.locator('.task-row').first().evaluate(el=>getComputedStyle(el).backgroundColor===getComputedStyle(document.querySelector('.topbar')).backgroundColor)).toBe(true);await window.screenshot({path:'artifacts/screenshots/desktop-smoke.png',animations:'disabled'});
- await window.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'记忆库',exact:true}).click();await window.getByRole('button',{name:'新建记忆',exact:true}).click();await window.getByLabel('记忆标题').fill('桌面演示记忆');await window.getByLabel('记忆内容',{exact:true}).fill('桌面与网页使用同一套交互');await window.getByRole('button',{name:'保存记忆',exact:true}).click();await expect(window.locator('.studio-item').filter({hasText:'桌面演示记忆'})).toBeVisible();
- await window.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'工作流',exact:true}).click();await window.getByRole('button',{name:'启动工作流',exact:true}).click();await window.getByRole('button',{name:'确认启动'}).click();await window.getByLabel('工作流步骤结论').fill('桌面步骤验收通过');await window.getByRole('button',{name:'确认本步'}).click();await window.getByRole('navigation',{name:'工作流内容页面'}).getByRole('button',{name:'已保存步骤'}).click();await expect(window.locator('.workflow-step:visible').first()).toContainText('桌面步骤验收通过');await window.screenshot({path:'artifacts/screenshots/desktop-workflow.png',animations:'disabled'});
- await window.getByRole('button',{name:'折叠侧边栏'}).click();await expect(window.locator('.sidebar')).toHaveCSS('width','72px');await window.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'工作台',exact:true}).click();await expect(window.locator('.brand-mark').first()).toBeVisible();await window.reload();await expect(window.locator('.sidebar')).toHaveCSS('width','72px');await window.getByRole('button',{name:'展开侧边栏'}).click();await expect(window.locator('.sidebar')).toHaveCSS('width','232px');
+ await navigate(window,'记忆库');await window.getByRole('button',{name:'新建记忆',exact:true}).click();await window.getByLabel('记忆标题').fill('桌面演示记忆');await window.getByLabel('记忆内容',{exact:true}).fill('桌面与网页使用同一套交互');await window.getByRole('button',{name:'保存记忆',exact:true}).click();await expect(window.locator('.studio-item').filter({hasText:'桌面演示记忆'})).toBeVisible();
+ await navigate(window,'工作流');await window.getByRole('button',{name:'启动工作流',exact:true}).click();await window.getByRole('button',{name:'确认启动'}).click();await window.getByLabel('工作流步骤结论').fill('桌面步骤验收通过');await window.getByRole('button',{name:'确认本步'}).click();await window.getByRole('navigation',{name:'工作流内容页面'}).getByRole('button',{name:'已保存步骤'}).click();await expect(window.locator('.workflow-step:visible').first()).toContainText('桌面步骤验收通过');await window.screenshot({path:'artifacts/screenshots/desktop-workflow.png',animations:'disabled'});
+ await window.getByRole('button',{name:'折叠侧边栏'}).click();await expect(window.locator('.sidebar')).toHaveCSS('width','72px');await navigate(window,'工作台');await expect(window.locator('.brand-mark').first()).toBeVisible();await window.reload();await expect(window.locator('.sidebar')).toHaveCSS('width','72px');await window.getByRole('button',{name:'展开侧边栏'}).click();await expect(window.locator('.sidebar')).toHaveCSS('width','232px');
  await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].close());
  expect(await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].isVisible())).toBe(false);
  expect((await window.evaluate(async()=> (await fetch('/api/health')).json())).ok).toBe(true);
