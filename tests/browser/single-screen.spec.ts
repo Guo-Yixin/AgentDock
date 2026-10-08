@@ -15,16 +15,16 @@ test('六种窗口下页面与分页保持一屏，内容通过标签与跳转�
  const views=['','history','projects','usage','assistant','sources','settings','goals','memories','workflows','reports','calendar','account'];
  for(const [width,height] of [[1920,1080],[1440,900],[1366,768],[960,600],[390,844],[390,600]]){
   await page.setViewportSize({width,height});
-  for(const view of views){await page.goto('/'+view+'?demo=1');await expect(page.locator('.content')).toBeVisible();await fits(page);}
+  for(const view of views){await page.goto('/'+view+'?demo=1');await expect(page.locator('.content')).toBeVisible();if(view==='usage')await expect(page.locator('.heatmap-grid')).toBeVisible();await fits(page);}
   await page.goto('/usage?demo=1');
-  for(const value of ['activity','models','ledger','supplement','prices','coverage']){await section(page,'用量页面',value);await fits(page);}
+  for(const value of ['daily','models','ledger','supplement','prices','coverage']){await section(page,'用量页面',value);await fits(page);}
   await page.goto('/assistant?demo=1');await section(page,'助手页面','context');await fits(page);
  }
 });
 
 test('固定工作台入口、标签与浏览器返回保持状态',async({page})=>{
  await page.goto('/?demo=1');await page.getByRole('button',{name:/查看跨工具任务流/}).click();await expect(page).toHaveURL(/history.*recent=true/);await expect(page.getByLabel('搜索任务')).toBeVisible();await page.goBack();await expect(page.getByRole('heading',{name:'工作台',exact:true})).toBeVisible();
- await page.goto('/usage?demo=1');await section(page,'用量页面','models');await section(page,'用量页面','activity');await page.goBack();await expect(page.getByRole('navigation',{name:'用量页面'}).getByRole('button',{name:'工具与模型'})).toHaveAttribute('aria-current','page');
+ await page.goto('/usage?demo=1');await section(page,'用量页面','models');await section(page,'用量页面','daily');await page.goBack();await expect(page.getByRole('navigation',{name:'用量页面'}).getByRole('button',{name:'工具与模型'})).toHaveAttribute('aria-current','page');
 });
 
 test('短窗口分步编辑不丢失草稿，保存按钮无需页面滚动',async({page})=>{

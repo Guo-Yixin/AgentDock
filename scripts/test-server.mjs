@@ -17,7 +17,7 @@ const db = new DatabaseSync(path.join(cursor, 'state.vscdb')); db.exec('CREATE T
 db.prepare('INSERT OR REPLACE INTO composerHeaders VALUES(?,?)').run('test-cursor', JSON.stringify({ composerId: 'test-cursor', createdAt: Date.now(), workspaceIdentifier: project }));
 db.prepare('INSERT OR REPLACE INTO cursorDiskKV VALUES(?,?)').run('composerData:test-cursor', JSON.stringify({ composerId: 'test-cursor', name: '完善来源列表', workspaceIdentifier: project, conversationMap: { a: { type: 1, text: '完善来源列表' }, b: { type: 2, text: '已完成页面，实现待确认。' } } })); db.close();
 process.env.AGENTDOCK_HOME = home; process.env.AGENTDOCK_DATA = path.resolve('artifacts/e2e/data'); process.env.AGENTDOCK_PORT = '4318';
-const { store, config } = await testStore('agentdock_e2e'); await createOwner(store,testAccount);await store.close();
+const { store, config } = await testStore('agentdock_e2e'); await createOwner(store,testAccount);await store.putDocument('chat',{id:'reading-chat',title:'合成长聊天',messages:Array.from({length:140},(_,i)=>({role:i%2?'assistant':'user',text:`消息 ${i}：`+'连续阅读与位置保持。'.repeat(18),status:'complete',preview:{text:'不应随分页返回的上下文快照'}}))});await store.close();
 for (const name of ['host','port','user','password','database']) process.env['AGENTDOCK_MYSQL_'+name.toUpperCase()] = String(config[name]); process.env.AGENTDOCK_MYSQL_TLS=String(config.tls);
 const testIndex = path.join(process.env.AGENTDOCK_DATA, 'agentdock.sqlite');
 

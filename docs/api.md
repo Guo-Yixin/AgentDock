@@ -59,3 +59,11 @@
 桌面 API 和静态页面必须带本次启动的 `X-AgentDock-Session`。令牌仅在主进程与独立后端间保存，由主进程注入本应用请求，不放入 URL、前端上下文或日志。普通网页启动保留原本的本机来源检查。
 
 目标 title/projectId/description/note/status/needsReview 单独持久化；status 为 not_started/in_progress/blocked/done/archived，done 设置用户确认时间。会话标记新增 needsReview；回复结束不改变目标状态。
+
+## 0.8.1 聊天只读分页
+
+`GET /api/assistant/chats/:id/messages?before=<位置>&limit=20` 使用现有账号认证，桌面额外保留启动会话认证。省略 `before` 时读取最近消息；`before` 为非负整数，表示读取该位置之前的消息，`limit` 默认 20，支持 1–100。
+
+返回 `id`、`title`、`messages`、`total`、`start`、`end`、`nextBefore`。消息按原顺序排列，位置范围为 `[start,end)`；`nextBefore` 为下一页的 `before`，到达开头时为 `null`。返回正文、状态、来源等消息字段，但省略发送预览 `preview`。不存在的聊天返回 404，非法参数返回 400，未登录返回 401。
+
+接口不修改聊天记录或数据库结构；原完整聊天及上下文快照接口继续保留。客户端首次加载 20 条，每次再读 20 条，最多渲染 100 条，超出窗口的消息可按位置重新读取。

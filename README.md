@@ -2,6 +2,19 @@
 
 本地 AI 编程任务指挥台：汇总 Codex、Claude Code、Cursor、Pi、DeepSeek Harness 和 WorkBuddy 的会话，按项目整理进展、日报与周报，并提供日历日程和带来源的分析助手。
 
+## 0.8.1 布局修复与统一阅读体验
+
+- 网页与桌面继续采用一屏框架和固定底栏。AI 来源在侧栏内展开占位，六个来源完整显示；空间不足时暂时收起导航组，关闭来源后恢复展开状态。
+- 历史详情改为居中矩形弹窗，最大宽度 1120px，窗口上下至少留出 24px；背景模糊并降低亮度，支持关闭按钮、Escape、焦点约束和未保存提示。
+- 任务目标、提取摘要、报告进展、下一步和 AI 版本使用单项手风琴，可再次点击关闭。正文按长度占位，最多使用可用阅读区的 45%，长文内部滚动；报告条目继续分页。标题、列表、强调和代码按 Markdown 显示，明确的系统上下文与图片附件标记默认隐藏，可切换原文查看。来源路径保留在会话“来源与关联”和导出中。
+- 记忆与工作流索引改为顶部排列的紧凑卡片，摘要单行省略并去掉 Markdown 符号，状态和复查时间独立显示；未选择对象时，详情提示居中。
+- 助手消息连续滚动，用户靠右、AI 靠左，输入框固定。首次读取最近 20 条，每次加载更早的 20 条，最多渲染 100 条；需要时可加载后续消息。流式回答仅在位于底部时自动跟随，向上阅读时提示“有新消息”，停止和回答完成后保持阅读位置；读取失败可重试，发送未成功时保留问题草稿。
+- 用量时间、工具、模型、项目与清除按钮固定在标题下方，各分区共用并在窄窗口换行。总览合并累计指标、当前范围指标和年度热力图，保留各自统计口径；每日分布独立展示，横轴采用月／日刻度，悬停或聚焦显示完整日期及数值，图例换行且说明独立占位。
+- 头像通过 FileReader Data URL 解码，继续支持最大 5 MiB 的 PNG、JPEG、WebP，在本地居中裁成 128 × 128 PNG 保存；损坏图片提示中文原因，可重新选择同一文件。桌面安全策略保持沙箱、上下文隔离和仅允许 `self` / `data:` 图片。
+- 新增只读 `GET /api/assistant/chats/:id/messages?before=<位置>&limit=20`：省略 `before` 从末尾读取，返回 `messages`、`total`、`start`、`end` 和 `nextBefore`（结束为 `null`），`limit` 支持 1–100。分页不返回预览快照，原完整聊天接口和数据库结构保持兼容；布局调整不改写原会话、用量或补录数据。
+
+验收范围与复现入口见 [0.8.1 验收记录](docs/verification-0.8.1.md)。
+
 ## 0.8.0 一屏工作空间
 
 - 页面固定在当前窗口内，顶部导航、底栏和操作入口保持可见。长正文、报告内容、聊天消息和文本框可在自己的阅读区域滚动；列表改为分页，复杂表单改为标签与分步填写。
@@ -67,7 +80,7 @@
 
 ## Windows 桌面测试版
 
-安装包 `AgentDock-0.8.0-windows-x64.exe` 由 [GitHub 自动检查](https://github.com/Guo-Yixin/AgentDock/actions/workflows/ci.yml) 构建，进入成功运行的 Artifacts 下载 `AgentDock-windows-x64`（需登录 GitHub，保留 14 天）。公开正式版本在 [Releases](https://github.com/Guo-Yixin/AgentDock/releases)；没有更新时不会自动下载或安装。
+安装包 `AgentDock-0.8.1-windows-x64.exe` 由 [GitHub 自动检查](https://github.com/Guo-Yixin/AgentDock/actions/workflows/ci.yml) 构建，进入成功运行的 Artifacts 下载 `AgentDock-windows-x64`（需登录 GitHub，保留 14 天）。公开正式版本在 [Releases](https://github.com/Guo-Yixin/AgentDock/releases)；没有更新时不会自动下载或安装。
 
 - 当前用户安装，无需管理员权限。捆绑 SHA-256 校验的官方 Node.js 24.21.0，无需另装 Node.js；**仍需自行准备并配置 MySQL**。
 - 关闭窗口隐藏到托盘；托盘可打开窗口、暂停/恢复采集或退出。退出仅停止本应用启动的后端。服务异常会尝试恢复，也可手动重试。
@@ -87,6 +100,8 @@ npm.cmd run test:desktop
 $env:AGENTDOCK_DESKTOP_EXE = (Resolve-Path release/win-unpacked/AgentDock.exe).Path
 npm.cmd run test:desktop
 ```
+
+真实头像验收可在已有本地 MySQL 测试配置时运行：设置 `AGENTDOCK_DESKTOP_ACCOUNT_TEST=1`，并将 `AGENTDOCK_AVATAR_FILE` 指向自己的 JPEG，再运行 `npm.cmd run test:desktop`（可同时指定上面的 `AGENTDOCK_DESKTOP_EXE` 验证打包程序）。测试只使用 `agentdock_e2e_desktop` 隔离数据库和 `artifacts/desktop-test` 配置目录，不连接原始 IDE；验证损坏图片重复选择、128 × 128 PNG 保存与刷新恢复。未设置该开关时，桌面冒烟测试不需要数据库。
 
 桌面渲染器启用沙箱、上下文隔离并关闭 Node 集成；窄接口只提供文件选择、桌面偏好及版本检查。独立后端使用随机本机端口和每次启动的会话认证，令牌不写入 URL、前端、模型或日志。源代码运行的网页保持默认 4317 端口。启动认证与账号登录分别校验，桌面渲染器不能绕过账号保护。
 

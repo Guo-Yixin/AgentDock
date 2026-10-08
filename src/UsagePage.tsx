@@ -184,7 +184,7 @@ export default function UsagePage({
   revision: number;
   openTask: (id: string) => void;
 }) {
-  const [priceTab,setPriceTab]=useSection('价格','fees');const listSize=useListSize();
+  const [priceTab,setPriceTab]=useSection('价格','fees');const listSize=useListSize(5,120);
   const [filters,updateFilters]=useQueryFields('usage',{scope:'lifetime',range:'30',start:offsetDate(29),end:today(),provider:'',model:'',project:'',page:'1'});
   const {scope,range,start,end,provider,model,project}=filters,page=Math.max(1,Number(filters.page)||1);
   const setScope=(scope:string)=>updateFilters({scope}),setStart=(start:string)=>updateFilters({start,page:'1'}),setEnd=(end:string)=>updateFilters({end,page:'1'}),setProvider=(provider:string)=>updateFilters({provider,page:'1'}),setModel=(model:string)=>updateFilters({model,page:'1'}),setProject=(project:string)=>updateFilters({project,page:'1'}),setPage=(page:number)=>updateFilters({page:String(page)});
@@ -363,8 +363,7 @@ export default function UsagePage({
           导出汇总 CSV
         </button>
       </div>
-      {error&&<p className="error-banner" role="alert">{error}</p>}<p className="usage-filter-summary" title={[start,end,names[provider]||"全部工具",model||"全部模型"].join(" · ")}>{start} — {end} · {names[provider]||"全部工具"} · {model||"全部模型"}</p><Screens id="用量" initial="overview" choices={[{id:'filters',label:'筛选'},{id:'overview',label:'总览'},{id:'activity',label:'活动图表'},{id:'models',label:'工具与模型'},{id:'ledger',label:'明细'},{id:'supplement',label:'补录'},{id:'prices',label:'价格'},{id:'coverage',label:'覆盖说明'}]}>
-<Pane id="filters"><div className="usage-filters">
+      {error&&<p className="error-banner" role="alert">{error}</p>}<p className="usage-filter-summary" title={[start,end,names[provider]||"全部工具",model||"全部模型"].join(" · ")}>{start} — {end} · {names[provider]||"全部工具"} · {model||"全部模型"}</p><div className="usage-filters">
         <label>
           时间范围
           <select
@@ -472,7 +471,8 @@ export default function UsagePage({
         >
           清除筛选
         </button>
-      </div></Pane><Pane id="overview"><Screens id="用量总览" choices={[{id:"profile",label:"累计用量"},{id:"period",label:"当前范围"}]}><Pane id="profile"><section className="usage-profile source-panel">
+      </div><Screens id="用量" initial="overview" choices={[{id:'overview',label:'总览'},{id:'daily',label:'每日分布'},{id:'models',label:'工具与模型'},{id:'ledger',label:'明细'},{id:'supplement',label:'补录'},{id:'prices',label:'价格'},{id:'coverage',label:'覆盖说明'}]}>
+<Pane id="overview" className="usage-dashboard"><section className="usage-profile source-panel">
         <div className="usage-owner">
           <span className="usage-avatar">
             {demo?"D":<AvatarContent/>}
@@ -503,9 +503,9 @@ export default function UsagePage({
           ))}
         </div>
         <p className="muted">
-          累计为当前工具、模型与项目筛选下的全部历史，不受日期范围限制。已记录明细 {short(data?.profile.measuredTotal ?? data?.profile.total ?? 0)} + 手动补录 {short(historical?.total || 0)}；峰值、活跃与连续天数仅依据真实日志。
+          累计按当前工具、模型与项目统计全部历史，不受日期范围限制；峰值、活跃与连续天数仅统计实测。
         </p>
-      </section></Pane><Pane id="period">{data&&<><div className="usage-metrics">
+      </section>{data&&<><div className="usage-metrics">
             {[
               [
                 Layers3,
@@ -540,20 +540,8 @@ export default function UsagePage({
                 </article>
               );
             })}
-          </div></>}</Pane></Screens></Pane>
-<Pane id="coverage">{data&&<div className="explanation usage-disclosure">
-            <Info size={17} />
-            <p>
-              当前范围内保留 {data.coverage.totalSessions} 个 IDE 会话，其中{" "}
-              {data.coverage.measuredSessions} 个包含可解析用量。
-              {data.summary.incomplete} 条用量缺少输入或输出；
-              {data.summary.cacheUnknown}{" "}
-              条未报告缓存读取。缺失值不按零用量推断。Codex
-              累计值按增量去重；Claude/Pi 缓存输入合并；推理 token
-              是输出的子集，不重复相加。Pi
-              的所有已保留分支均计入实际发生的用量。
-            </p>
-          </div>}</Pane><Pane id="activity"><Screens id="活动图表" choices={[{id:'year',label:'年度热力图'},{id:'daily',label:'每日分布'}]}><Pane id="year">{data&&<section className="source-panel heatmap-panel">
+          </div></>}
+{data&&<section className="source-panel heatmap-panel">
             <div className="section-heading">
               <h3>
                 <Flame size={18} /> Token 活动
@@ -561,7 +549,7 @@ export default function UsagePage({
               <label className="muted"><input type="checkbox" checked={includeHistory} onChange={e=>setIncludeHistory(e.target.checked)}/> 显示手动补录 · 过去 365 天</label>
             </div>
             <Heatmap days={data.heatmap} estimates={includeHistory ? [...(historical?.days||[]),...(data.manualHeatmap||[])] : []} />
-          </section>}</Pane><Pane id="daily">{data&&<section className="source-panel">
+          </section>}</Pane><Pane id="daily">{data&&<section className="source-panel daily-token-panel">
               <div className="section-heading">
                 <h3>每日 Token 分布</h3>
                 <span>
@@ -610,7 +598,19 @@ export default function UsagePage({
               <p className="muted">
                 输入总数包含缓存；紫色部分为生成日期的手动补录，无输入输出拆分，不计入费用。
               </p>
-            </section>}</Pane></Screens></Pane>
+            </section>}</Pane><Pane id="coverage">{data&&<div className="explanation usage-disclosure">
+            <Info size={17} />
+            <p>
+              当前范围内保留 {data.coverage.totalSessions} 个 IDE 会话，其中{" "}
+              {data.coverage.measuredSessions} 个包含可解析用量。
+              {data.summary.incomplete} 条用量缺少输入或输出；
+              {data.summary.cacheUnknown}{" "}
+              条未报告缓存读取。缺失值不按零用量推断。Codex
+              累计值按增量去重；Claude/Pi 缓存输入合并；推理 token
+              是输出的子集，不重复相加。Pi
+              的所有已保留分支均计入实际发生的用量。
+            </p>
+          </div>}</Pane>
 <Pane id="models">{data&&<section className="source-panel usage-models">
             <div className="section-heading">
               <h3>工具与模型对比</h3>
@@ -1029,7 +1029,7 @@ function Heatmap({ days, estimates }: { days: { day: number; total: number }[]; 
         {[0, 1, 2, 3, 4].map((i) => (
           <i key={i} className={`heatmap-cell level-${i}`} />
         ))}
-        <span>多</span><i className="heatmap-cell level-3 estimated-day"/><span>紫色描边：含估算日期</span>
+        <span>多</span><i className="heatmap-cell level-3 estimated-day"/><span>紫色描边：含手动补录</span>
       </div>
     </>
   );
@@ -1098,7 +1098,7 @@ function TokenChart({ days }: { days: (Totals & { day: string; historical?:numbe
         {selected && (
           <div className="chart-tooltip">
             <strong>
-              {selected.day} · {fmt(selected.total)}
+              {selected.day} · {fmt(selected.total + (selected.historical || 0))}
             </strong>
             <span>
               普通输入{" "}
@@ -1116,8 +1116,7 @@ function TokenChart({ days }: { days: (Totals & { day: string; historical?:numbe
         )}
       </div>
       <div className="chart-labels">
-        <span>{days[0]?.day || "暂无记录"}</span>
-        <span>{days.at(-1)?.day}</span>
+        {Array.from({length:Math.min(6,days.length)},(_,i)=>{const day=days[Math.round(i*(days.length-1)/Math.max(1,Math.min(6,days.length)-1))]?.day;return <span key={i} title={day}>{day?.slice(5).replace('-','/')||'暂无记录'}</span>;})}
       </div>
     </>
   );

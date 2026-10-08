@@ -1,3 +1,4 @@
+import {chatPage} from './chat-pages.mjs';
 import {manualPut} from './usage-manual.mjs';
 import {CollectionRun,validateCollection} from './collection-policy.mjs';
 import {templates,studioList,studioGet,memoryPut,memoryReview,workflowPut,workflowStep} from './studio.mjs';
@@ -62,7 +63,7 @@ const handlers={
  migration:()=>store.document('legacy-migration','migration'),
  context:async args=>({...await buildContext(store,args.refs,args.range),title:'上下文预览'}),
  preview:id=>store.document(id,'preview'),previewSave:async record=>{await store.rows("DELETE FROM ad_documents WHERE kind='preview' AND updated_at<?",[Date.now()-15*60000]);return store.putDocument('preview',record);},
- chats:async args=>args?.headers?(await store.rows("SELECT id,title FROM ad_documents WHERE kind='chat' ORDER BY updated_at DESC LIMIT 2000")).map(r=>({...r,messages:[]})):store.documents('chat'),chatGet:id=>store.document(id,'chat'),chatPut:record=>store.putDocument('chat',record),chatDelete:id=>store.deleteDocument(id,'chat'),
+ chats:async args=>args?.headers?(await store.rows("SELECT id,title FROM ad_documents WHERE kind='chat' ORDER BY updated_at DESC LIMIT 2000")).map(r=>({...r,messages:[]})):store.documents('chat'),chatGet:id=>store.document(id,'chat'),chatMessages:async({id,...options})=>{const chat=await store.document(id,'chat');return chat?chatPage(chat,options):null;},chatPut:record=>store.putDocument('chat',record),chatDelete:id=>store.deleteDocument(id,'chat'),
  stop:async()=>{run.close();clearTimeout(reportTimer);clearInterval(healthTimer);await collector?.stop();await store?.close();return true;}
 };
 parentPort.on('message',async({id,method,args})=>{
