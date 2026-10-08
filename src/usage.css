@@ -608,7 +608,7 @@
 .model-bar .historical-bar { background: linear-gradient(90deg,#8264bf,#baa4ee); }
 .token-chart .historical { fill: #9981df; }
 .usage-legend .historical::before { background: #9981df; }
-.heatmap-cell.estimated-day { box-shadow: inset 0 0 0 2px #9981df; }
+
 .heatmap-legend { flex-wrap: wrap; }
 .heatmap-panel input[type=checkbox] { accent-color: #9981df; }
 .usage-models .section-heading select { max-width: 100%; }

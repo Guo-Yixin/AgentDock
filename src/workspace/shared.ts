@@ -5,7 +5,7 @@ import { demoOverview, demoPage } from '../demo';
 export async function api<T>(url: string, data?: unknown, method = 'POST'): Promise<T> {return request<T>(url,data===undefined?undefined:{method,body:JSON.stringify(data)});}
 export const today = () => new Date(Date.now() + 28800000).toISOString().slice(0, 10);
 export const datetime = (n: number) => new Date(n + 28800000).toISOString().slice(0, 16);
-export const epoch = (s: string) => Date.parse(s + ':00+08:00');
+export const epoch = (s: string) => Date.parse(s.length===10?s+'T00:00:00+08:00':s+':00+08:00');
 export interface ContextRef { type: 'task' | 'project' | 'report' | 'schedule' | 'goal' | 'memory' | 'workflow'; id: string; includeTranscript?: boolean; branchId?: string }
 export interface Health { connected: boolean; message: string; configured: boolean; legacyAvailable: boolean }
 export interface Discovery { id: string; name: string; root: string; executable: string; enabled: boolean; exists: boolean; discoveredBy: string }

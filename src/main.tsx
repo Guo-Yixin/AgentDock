@@ -10,4 +10,5 @@ import './usage.css';
 import './studio.css';
 import './compact.css';
 import './screen.css';
+import './experience.css';
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><BrowserRouter><AuthGate><App /></AuthGate></BrowserRouter></React.StrictMode>);

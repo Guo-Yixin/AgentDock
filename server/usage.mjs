@@ -1,4 +1,4 @@
-import {referenceBudgets} from './price-catalogue.mjs';
+import {referenceBudgets,defaultPrices} from './price-catalogue.mjs';
 import {compactTitle} from './presentation.mjs';
 import {historyOverview} from './usage-history.mjs';
 import { createHash, randomUUID } from "node:crypto";
@@ -541,12 +541,14 @@ export async function usageOverview(store, args = {}) {
   const prices = (await store.documents("price")).sort(
     (a, b) => b.effectiveAt - a.effectiveAt || b.updatedAt - a.updatedAt,
   );
+  const options = await store.rows('SELECT DISTINCT provider,model FROM ad_usage ORDER BY provider,model');
+  const effectivePrices=[...prices,...defaultPrices(options)];
   const costs = [],
     costDays = [];
   // Every record is priced by its latest applicable tariff. Mixed currencies stay separate.
-  for (let i = 0; i < prices.length; i++) {
-    const p = prices[i],
-      newer = prices
+  for (let i = 0; i < effectivePrices.length; i++) {
+    const p = effectivePrices[i],
+      newer = effectivePrices
         .slice(0, i)
         .filter((x) => x.provider === p.provider && x.model === p.model);
     const rateFilters = newer.map(() => "NOT (recorded_at>=?)").join(" AND ");
@@ -572,7 +574,8 @@ export async function usageOverview(store, args = {}) {
         records: rows.reduce((s, r) => s + Number(r.records), 0),
         cacheUnknown: rows.reduce((s, r) => s + Number(r.cacheUnknown), 0),
         currency: p.currency,
-        kind: "自定义单价估算",
+        kind: p.default?"官方默认单价估算":"自定义单价估算",
+        default:Boolean(p.default),source:p.source,note:p.note,
         priceId: p.id,
       });
       costDays.push(
@@ -584,9 +587,7 @@ export async function usageOverview(store, args = {}) {
     `SELECT JSON_UNQUOTE(JSON_EXTRACT(record,'$.sourceCurrency')) currency,COUNT(*) records,SUM(JSON_EXTRACT(record,'$.sourceCost')) amount FROM ad_usage WHERE ${f.sql} AND JSON_TYPE(JSON_EXTRACT(record,'$.sourceCost')) IN ('INTEGER','DOUBLE','DECIMAL') GROUP BY currency`,
     f.params,
   );
-  let options = await store.rows(
-    "SELECT DISTINCT provider,model FROM ad_usage ORDER BY provider,model",
-  );
+
   const global = filters({ ...args, start: 0, end: Date.now() + 86400000 });
   const activity = await store.rows(
     `SELECT FLOOR((recorded_at+28800000)/86400000) day,COALESCE(SUM(total_tokens),0) total FROM ad_usage WHERE ${global.sql} AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(record,'$.mode')),'')<>'manual' GROUP BY day ORDER BY day`,
@@ -630,6 +631,7 @@ export async function usageOverview(store, args = {}) {
     costDays,
     sourceCosts: source.map(numeric),
     prices,
+    defaultPrices:defaultPrices(options),
     options,
     profile,
     history,manualHeatmap,

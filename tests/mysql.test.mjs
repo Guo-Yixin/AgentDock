@@ -183,3 +183,17 @@ test('MySQL: 精确补录细化守恒、并发版本、删除恢复及采集互�
  const first=await store.list({pageSize:5,page:1}),last=await store.list({pageSize:5,page:3});assert.equal(first.tasks.length,5);assert.equal(last.tasks.length,2);assert.equal(first.total,12);
  }finally{await store.close();}
 });
+
+
+test('MySQL: 默认价格、缓存费用、自定义覆盖和个人资料原子保存',{skip:!enabled},async()=>{
+ const {store}=await testStore('agentdock_test_defaults');try{
+  const timestamp=Date.now(),task=finalize(emptyTask('claude','default-rates','synthetic-defaults.jsonl',{updatedAt:timestamp,createdAt:timestamp,title:'默认价格验收'}));
+  task._newUsage=[{id:'b'.repeat(64),model:'claude-sonnet-5-5',timestamp,input:1000000,cacheRead:500000,cacheWrite:100000,cacheWriteLong:25000,output:100000,total:1100000,mode:'request',evidence:{path:'synthetic-defaults.jsonl',line:1}}];await store.upsert(task);
+  let data=await usageOverview(store,{});assert.equal(data.costs.length,1);assert.equal(data.costs[0].default,true);assert.equal(data.costs[0].amount,2.1375);assert.equal((await store.documents('price')).length,0);
+  const price=validatePrice({provider:'claude',model:'claude-sonnet-5-5',currency:'CNY',date:'2020-01-01',input:4,output:20,cacheRead:.2,cacheWrite:5,cacheWriteLong:8});await store.putDocument('price',price);data=await usageOverview(store,{});assert.equal(data.costs.length,1);assert.equal(data.costs[0].default,false);assert.equal(data.costs[0].amount,4.275);assert.equal(data.costs[0].currency,'CNY');
+  await createOwner(store,{username:'profile_test_owner',password:'profile-test-password'});const session=await login(store,{username:'profile_test_owner',password:'profile-test-password'});
+  await account(store,{token:session.token,action:'profile',displayName:'测试用户',phone:'+86 138-0000-0000',email:'test@example.com',gender:'private',birthday:'2000-02-29',signature:'测试签名'});let user=(await authStatus(store,session.token)).user;assert.equal(user.email,'test@example.com');
+  await assert.rejects(account(store,{token:session.token,action:'profile',displayName:'错误修改',birthday:'2001-02-29'}));user=(await authStatus(store,session.token)).user;assert.equal(user.displayName,'测试用户');assert.equal(user.birthday,'2000-02-29');
+  await account(store,{token:session.token,action:'profile',displayName:'仅改名称'});assert.equal((await authStatus(store,session.token)).user.signature,'测试签名');
+ }finally{await store.close();}
+});

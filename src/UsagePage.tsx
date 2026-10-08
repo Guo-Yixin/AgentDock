@@ -1,3 +1,4 @@
+import {UsageInsights} from './UsageInsights';
 import {Screens,Pane,Steps,useSection,useListSize,useQueryFields} from './Screen';
 import {PriceCatalogue} from './PriceCatalogue';
 import {AvatarContent} from './Avatar';
@@ -49,7 +50,7 @@ type Cost = {
   currency: string;
   amount: number;
   records: number;
-  cacheUnknown?: number;
+  cacheUnknown?: number;default?:boolean;
 };
 type Usage = {
   referenceBudgets?:{provider:string;model:string;available:boolean;currency?:string;min?:number;max?:number;source?:string;reason?:string}[];
@@ -63,6 +64,7 @@ type Usage = {
   costDays: (Cost & { day: string })[];
   sourceCosts: Cost[];
   prices: Price[];
+  defaultPrices?: (Price&{note:string;source:string})[];
   options: { provider: string; model: string }[];
   profile: {
     total: number;
@@ -184,7 +186,7 @@ export default function UsagePage({
   revision: number;
   openTask: (id: string) => void;
 }) {
-  const [priceTab,setPriceTab]=useSection('价格','fees');const listSize=useListSize(5,120);
+  const [,setUsageTab]=useSection('用量','overview');const [priceTab,setPriceTab]=useSection('价格','fees');const listSize=useListSize(5,120);
   const [filters,updateFilters]=useQueryFields('usage',{scope:'lifetime',range:'30',start:offsetDate(29),end:today(),provider:'',model:'',project:'',page:'1'});
   const {scope,range,start,end,provider,model,project}=filters,page=Math.max(1,Number(filters.page)||1);
   const setScope=(scope:string)=>updateFilters({scope}),setStart=(start:string)=>updateFilters({start,page:'1'}),setEnd=(end:string)=>updateFilters({end,page:'1'}),setProvider=(provider:string)=>updateFilters({provider,page:'1'}),setModel=(model:string)=>updateFilters({model,page:'1'}),setProject=(project:string)=>updateFilters({project,page:'1'}),setPage=(page:number)=>updateFilters({page:String(page)});
@@ -471,7 +473,7 @@ export default function UsagePage({
         >
           清除筛选
         </button>
-      </div><Screens id="用量" initial="overview" choices={[{id:'overview',label:'总览'},{id:'daily',label:'每日分布'},{id:'models',label:'工具与模型'},{id:'ledger',label:'明细'},{id:'supplement',label:'补录'},{id:'prices',label:'价格'},{id:'coverage',label:'覆盖说明'}]}>
+      </div><Screens id="用量" initial="overview" choices={[{id:'overview',label:'总览'},{id:'analysis',label:'分析摘要'},{id:'daily',label:'每日分布'},{id:'models',label:'工具与模型'},{id:'ledger',label:'明细'},{id:'supplement',label:'补录'},{id:'prices',label:'价格'},{id:'coverage',label:'覆盖说明'}]}>
 <Pane id="overview" className="usage-dashboard"><section className="usage-profile source-panel">
         <div className="usage-owner">
           <span className="usage-avatar">
@@ -521,10 +523,10 @@ export default function UsagePage({
               ],
               [
                 Coins,
-                "自定义单价估算",
+                "Token 费用估算",
                 Object.entries(costByCurrency)
                   .map(([c, v]) => `${v.toFixed(4)} ${c}`)
-                  .join(" / ") || "未配置单价",
+                  .join(" / ") || "未计价",
                 `${priced} 条已计价 · ${Math.max(0, data.summary.records - priced)} 条未计价`,
               ],
             ].map(([Icon, label, value, caption]) => {
@@ -549,7 +551,7 @@ export default function UsagePage({
               <label className="muted"><input type="checkbox" checked={includeHistory} onChange={e=>setIncludeHistory(e.target.checked)}/> 显示手动补录 · 过去 365 天</label>
             </div>
             <Heatmap days={data.heatmap} estimates={includeHistory ? [...(historical?.days||[]),...(data.manualHeatmap||[])] : []} />
-          </section>}</Pane><Pane id="daily">{data&&<section className="source-panel daily-token-panel">
+          </section>}{data&&<UsageInsights summary={data.summary} tools={data.tools} priced={priced} defaultCount={data.costs.filter(c=>c.default).reduce((n,c)=>n+c.records,0)} costs={costByCurrency}/>}</Pane><Pane id="analysis" className="usage-analysis-page">{data&&<UsageInsights summary={data.summary} tools={data.tools} priced={priced} defaultCount={data.costs.filter(c=>c.default).reduce((n,c)=>n+c.records,0)} costs={costByCurrency}/>}<button className="outline-button" onClick={()=>setUsageTab('overview')}>返回总览</button></Pane><Pane id="daily">{data&&<section className="source-panel daily-token-panel">
               <div className="section-heading">
                 <h3>每日 Token 分布</h3>
                 <span>
@@ -726,7 +728,7 @@ export default function UsagePage({
               </div>
               {Object.entries(costByCurrency).map(([currency, value]) => (
                 <div className="cost-line" key={currency}>
-                  <span>{currency} · 自定义单价估算</span>
+                  <span>{currency} · 官方默认 / 自定义单价估算</span>
                   <strong>{value.toFixed(6)}</strong>
                 </div>
               ))}
@@ -735,7 +737,7 @@ export default function UsagePage({
                   <Coins size={30} />
                   <p>尚未计价</p>
                   <small>
-                    填写模型的单价及生效日期后，计算已知输入与输出的费用。
+                    已核验型号自动使用官方默认单价；未知型号请填写单价，缺失输入输出的记录不计价。
                   </small>
                 </div>
               )}
@@ -757,7 +759,7 @@ export default function UsagePage({
                   条；独立展示，不与自定义估算相加）
                 </p>
               ))}
-            </section>}</Pane><Pane id="budget">{data?.referenceBudgets&&<section className="source-panel"><h3>公开 API 价格预算 · 当前日期范围</h3><p className="muted">按当前公开标准价格换算的参考预算，区间反映上下文或峰谷等级。缺失缓存字段按普通输入；区间不是实际费用上下界。未套用历史价格、订阅额度、Fast/Batch、区域及平台附加费；与合同计价及来源账单独立，不能相加。无输入输出拆分的比例补录不计价。</p><Paged label="参考预算">{data.referenceBudgets.map(r=><div className="report-fact" key={r.provider+r.model}><strong>{names[r.provider]} · {r.model}</strong><p>{r.available?`${r.min?.toFixed(4)}–${r.max?.toFixed(4)} ${r.currency}`:r.reason}</p>{r.source&&<a href={r.source} target="_blank" rel="noreferrer">官方依据 ↗</a>}</div>)}</Paged></section>}</Pane><Pane id="catalogue"><PriceCatalogue demo={demo} onApply={r=>{setPricing(true);setPriceTab('contract');setPrice({...price,provider:({'OpenAI':'codex','Anthropic':'claude','DeepSeek':'deepseek','Cursor 路由':'cursor','腾讯云':'workbuddy'} as Record<string,string>)[r.vendor]||price.provider,model:r.model,currency:r.currency,date:today(),input:String(r.input),output:String(r.output),cacheRead:String(r.cacheRead),cacheWrite:String(r.cacheWrite),cacheWriteLong:String(r.cacheWriteLong)});}}/></Pane><Pane id="contract">{data&&(pricing?<section className="source-panel price-editor">
+            </section>}</Pane><Pane id="budget">{data?.referenceBudgets&&<section className="source-panel"><h3>公开 API 价格预算 · 当前日期范围</h3><p className="muted">按当前公开标准价格换算的参考预算，区间反映上下文或峰谷等级。缺失缓存字段按普通输入；区间不是实际费用上下界。未套用历史价格、订阅额度、Fast/Batch、区域及平台附加费；与合同计价及来源账单独立，不能相加。无输入输出拆分的比例补录不计价。</p><Paged label="参考预算">{data.referenceBudgets.map(r=><div className="report-fact" key={r.provider+r.model}><strong>{names[r.provider]} · {r.model}</strong><p>{r.available?`${r.min?.toFixed(4)}–${r.max?.toFixed(4)} ${r.currency}`:r.reason}</p>{r.source&&<a href={r.source} target="_blank" rel="noreferrer">官方依据 ↗</a>}</div>)}</Paged></section>}</Pane><Pane id="catalogue"><PriceCatalogue demo={demo} onApply={r=>{setPricing(true);setPriceTab('contract');setPrice({...price,provider:({'OpenAI':'codex','Anthropic':'claude','DeepSeek':'deepseek','Cursor 路由':'cursor','腾讯云':'workbuddy','腾讯 TokenHub':'workbuddy'} as Record<string,string>)[r.vendor]||price.provider,model:r.model,currency:r.currency,date:today(),input:String(r.input),output:String(r.output),cacheRead:String(r.cacheRead),cacheWrite:String(r.cacheWrite),cacheWriteLong:String(r.cacheWriteLong)});}}/></Pane><Pane id="contract">{data&&(pricing?<section className="source-panel price-editor">
               <div className="section-heading">
                 <h3>每百万 Token 单价</h3>
                 <button
@@ -769,8 +771,7 @@ export default function UsagePage({
                 </button>
               </div>
               <p className="muted">
-                使用你的实际 API
-                合同价格。未报告缓存读取的记录暂按普通输入计价；不自动套用订阅价格或汇率。新规则按生效日期覆盖同工具、同模型的旧规则。
+                默认按已核验型号的公开标准单价计算，你可填写实际 API 合同价格覆盖默认值。未报告缓存读取的记录暂按普通输入计价；不自动套用订阅价格或汇率。新规则按生效日期覆盖同工具、同模型的旧规则。
                 <a
                   href="https://api-docs.deepseek.com/quick_start/pricing/"
                   target="_blank"
@@ -876,7 +877,7 @@ export default function UsagePage({
                   保存单价规则
                 </button>
               </form></Pane><Pane id="rules">
-              <div>
+              <div><p className="muted">自定义规则按生效日期优先；删除后恢复适用的旧规则或官方默认。</p>
                 <Paged label="单价规则">{data.prices.map((p) => (
                   <div className="price-rule" key={p.id}>
                     <span>
@@ -889,7 +890,7 @@ export default function UsagePage({
                       onClick={async () => {
                         if (
                           !confirm(
-                            "删除此规则后，手动补录将按剩余规则重新计算，是否继续？",
+                            "删除此规则后，明细费用将按旧规则或官方默认重新计算，是否继续？",
                           )
                         )
                           return;
@@ -908,7 +909,7 @@ export default function UsagePage({
                   </div>
                 ))}</Paged>
               </div>
-            </Pane></Screens></section>:<button className="primary-button" onClick={()=>setPricing(true)}>配置单价</button>)}</Pane></Screens></Pane></Screens>
+            </Pane></Screens></section>:<section className="source-panel"><div className="section-heading"><h3>当前工具与模型的默认单价</h3><button className="primary-button" onClick={()=>setPricing(true)}>配置单价</button></div><p className="muted">单位：每百万 Token；当前公开价格换算。默认使用标准短上下文／高峰参考价，具体档位可在官方目录中选择并另存自定义规则。不会覆盖已保存规则。</p><Paged label="默认单价">{(data.defaultPrices||[]).map(p=><div className="report-fact" key={p.id}><strong>{names[p.provider]} · {p.model}</strong><p>输入 {p.input} / 输出 {p.output} / 缓存读取 {p.cacheRead} / 缓存写入 {p.cacheWrite} / 长缓存 {p.cacheWriteLong} {p.currency}/M</p><small>{p.note} <a href={p.source} target="_blank" rel="noreferrer">官方依据 ↗</a></small><button className="text-button" onClick={()=>{setPricing(true);setPrice({...price,provider:p.provider,model:p.model,currency:p.currency,date:today(),input:String(p.input),output:String(p.output),cacheRead:String(p.cacheRead),cacheWrite:String(p.cacheWrite),cacheWriteLong:String(p.cacheWriteLong)});}}>修改：{p.model}</button></div>)}</Paged>{!data.defaultPrices?.length&&<p className="muted">当前型号尚无已核验默认价，可从官方目录选择或自定义。</p>}</section>)}</Pane></Screens></Pane></Screens>
       {selected && (
         <div className="detail-overlay">
           <button
@@ -989,7 +990,8 @@ function Heatmap({ days, estimates }: { days: { day: number; total: number }[]; 
     startWeekday = new Date(displayStart * 86400000).getUTCDay(),
     map = new Map(days.map((d) => [d.day, d.total])),
     estimated = estimates.reduce((map,d)=>map.set(d.day,(map.get(d.day)||0)+d.total),new Map<number,number>()),
-    max = Math.max(1,...Array.from({length:365},(_,i)=>(map.get(start+i)||0)+(estimated.get(start+i)||0)));
+    values=Array.from({length:365},(_,i)=>(map.get(start+i)||0)+(estimated.get(start+i)||0)).filter(n=>n>0).sort((a,b)=>a-b),
+    thresholds=[.25,.5,.75].map(q=>values[Math.floor((values.length-1)*q)]||0);
   return (
     <>
       <div className="heatmap-scroll">
@@ -1002,12 +1004,12 @@ function Heatmap({ days, estimates }: { days: { day: number; total: number }[]; 
               measured = map.get(day)||0, historical = estimated.get(day)||0,
               n = measured + historical,
               level = n
-                ? Math.min(4, Math.max(1, Math.ceil(Math.sqrt(n / max) * 4)))
+                ? 1+thresholds.filter(t=>n>t).length
                 : 0,
               date = new Date(day * 86400000).toISOString().slice(0, 10);
             return (
               <button
-                className={`heatmap-cell level-${level} ${historical ? "estimated-day" : ""}`}
+                className={`heatmap-cell level-${level} ${historical ? 'estimated-day' : ''}`}
                 key={day}
                 onFocus={()=>setActiveDay(day)} onMouseEnter={()=>setActiveDay(day)}
                 aria-label={`${date}：${fmt(n)} Token；实测 ${fmt(measured)}，手动补录 ${fmt(historical)}`}
@@ -1029,7 +1031,7 @@ function Heatmap({ days, estimates }: { days: { day: number; total: number }[]; 
         {[0, 1, 2, 3, 4].map((i) => (
           <i key={i} className={`heatmap-cell level-${i}`} />
         ))}
-        <span>多</span><i className="heatmap-cell level-3 estimated-day"/><span>紫色描边：含手动补录</span>
+        <span title="颜色按非零日期用量的分位数表示深浅">多</span><span>悬停查看实测与补录</span>
       </div>
     </>
   );

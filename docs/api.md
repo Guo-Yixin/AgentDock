@@ -67,3 +67,14 @@
 返回 `id`、`title`、`messages`、`total`、`start`、`end`、`nextBefore`。消息按原顺序排列，位置范围为 `[start,end)`；`nextBefore` 为下一页的 `before`，到达开头时为 `null`。返回正文、状态、来源等消息字段，但省略发送预览 `preview`。不存在的聊天返回 404，非法参数返回 400，未登录返回 401。
 
 接口不修改聊天记录或数据库结构；原完整聊天及上下文快照接口继续保留。客户端首次加载 20 条，每次再读 20 条，最多渲染 100 条，超出窗口的消息可按位置重新读取。
+
+
+## 0.8.2 个人资料与参考计价
+
+`PATCH /api/account/profile` 继续要求 `displayName`，新增可选 `phone`（32 字）、`email`（254 字）、`gender`（空字符串、female、male、other、private）、`birthday`（1900 年至今天的有效 YYYY-MM-DD）和 `signature`（300 字）。省略字段保留旧值，空字符串清空；名称与资料在同一事务内保存。`GET /api/auth/status` 登录后返回资料，读取不写入数据库；所有者资料使用现有 profile 文档，不用于账号验证。
+
+`GET /api/usage` 新增只读 `defaultPrices`，默认规则带 `default: true`、核查日期、source、tier 和 note。`costs` 区分官方默认与自定义。计价优先采用记录日期适用的自定义规则，其余已核验型号按当前默认价参考换算；默认不是历史有效价，不创建 price 文档。输入包含缓存，先扣除缓存读写，再分别乘单价；长缓存写入按来源记录拆分；输出包含推理，不再追加推理 Token。没有输入输出拆分或未核验型号不计价；USD 与 CNY 分开汇总。
+
+`POST /api/usage/history` 新增可选 `distribution`：weekdays（原工作日分摊，省略保持兼容）或 flexible（弹性分摊，包含部分周末）。配置保留于原历史文档及版本中，按固定日期／模型权重生成估算且严格保持整数总量；不生成实际请求。原始记录、精确补录与实测活跃统计不受影响。
+
+日历建议只在前端生成；采纳仅生成编辑草稿，仍需调用现有 `/api/schedules` 保存才成为日程或触发提醒。

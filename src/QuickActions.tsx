@@ -1,6 +1,6 @@
 import {Paged} from './Pagination';
 import { useEffect, useRef, useState } from "react";
-import { Command, Search, X, ArrowUpRight } from "lucide-react";
+import { Zap, Search, X, ArrowUpRight } from "lucide-react";
 export function QuickActions({
   go,
   exportToday,
@@ -49,7 +49,7 @@ export function QuickActions({
         aria-label="快捷操作"
         onClick={open}
       >
-        <Command size={15} />
+        <Zap size={15} />
         <span>快捷操作</span>
         <kbd>⇧ P</kbd>
       </button>

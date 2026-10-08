@@ -45,6 +45,8 @@ try{
   await input.setInputFiles(file);await expect(window.getByRole('status')).toContainText('头像已保存');await window.reload();
   const avatar=window.locator('.user .avatar img');await expect(avatar).toBeVisible();expect(await avatar.evaluate(e=>[e.naturalWidth,e.naturalHeight])).toEqual([128,128]);
   expect(await window.evaluate(async()=> (await (await fetch('/api/auth/status')).json()).user.avatar.startsWith('data:image/png;base64,'))).toBe(true);
+  const topAvatar=await window.getByLabel('打开账号中心').boundingBox();expect(Math.abs(topAvatar.width-topAvatar.height)).toBeLessThan(.5);
+  await window.getByLabel('邮箱',{exact:true}).fill('desktop-test@example.com');await window.getByLabel('个人签名',{exact:true}).fill('桌面个人资料验收');await window.getByRole('button',{name:'保存资料',exact:true}).click();await expect(window.getByRole('status')).toContainText('个人资料已保存');await window.reload();await expect(window.getByLabel('邮箱',{exact:true})).toHaveValue('desktop-test@example.com');
   await window.screenshot({path:'artifacts/screenshots/desktop-avatar.png'});
   console.log('真实 JPEG、损坏图片重复选择、128×128 PNG 保存与刷新恢复验证通过（隔离 MySQL）');
   await navigate(window,'工作台');

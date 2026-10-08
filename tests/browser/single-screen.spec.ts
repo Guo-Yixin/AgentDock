@@ -4,7 +4,8 @@ import {section,reveal} from './navigation';
 async function fits(page:import('@playwright/test').Page){
  await expect.poll(()=>page.evaluate(()=>{
   const root=document.querySelector('.content')!,edge=root.getBoundingClientRect();
-  return [...root.querySelectorAll('button,input,textarea,select,.pagination,.project-card,.metric')].filter(e=>e.getClientRects().length&&!e.closest('[hidden]')&&getComputedStyle(e).visibility!=='hidden').filter(e=>{const r=e.getBoundingClientRect();return r.bottom>edge.bottom+2||r.right>edge.right+2||r.top<edge.top-2||r.left<edge.left-2;}).map(e=>e.getAttribute('aria-label')||e.textContent?.slice(0,35)||e.className);
+  const regions='.calendar-side-scroll,.calendar-grid,.account-profile-scroll,.insight-cards';
+  return [...root.querySelectorAll('button,input,textarea,select,.pagination,.project-card,.metric')].filter(e=>e.getClientRects().length&&!e.closest('[hidden],'+regions)&&getComputedStyle(e).visibility!=='hidden').concat([...root.querySelectorAll(regions)].filter(e=>e.getClientRects().length&&!e.closest('[hidden]'))).filter(e=>{const r=e.getBoundingClientRect();return r.bottom>edge.bottom+2||r.right>edge.right+2||r.top<edge.top-2||r.left<edge.left-2;}).map(e=>e.getAttribute('aria-label')||e.textContent?.slice(0,35)||e.className);
  })).toEqual([]);
  expect(await page.evaluate(()=>document.documentElement.scrollHeight<=innerHeight&&document.documentElement.scrollWidth<=innerWidth)).toBe(true);
  const footer=page.locator('.footer');await expect(footer).toContainText('本地工作空间');expect((await footer.boundingBox())!.y+(await footer.boundingBox())!.height).toBeLessThanOrEqual((await page.viewportSize())!.height+1);

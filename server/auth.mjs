@@ -1,4 +1,5 @@
 import {validateAvatar} from './avatar.mjs';
+import {validateProfile} from './account-profile.mjs';
 import { scrypt, randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 const derive = promisify(scrypt),
@@ -56,7 +57,7 @@ export async function authStatus(store, token = "", profile = true) {
   return {
     available: true,
     initialized: Boolean(owner),
-    user: user ? {...publicUser(user),...(profile?{avatar:(await store.document(`avatar-${user.id}`,'profile'))?.avatar||''}:{})} : null,
+    user: user ? {...publicUser(user),...(profile?{avatar:(await store.document(`avatar-${user.id}`,'profile'))?.avatar||'',...validateProfile({},await store.document(`account-${user.id}`,'profile')||{})}:{})} : null,
   };
 }
 export async function createOwner(store, input) {
@@ -135,10 +136,12 @@ export async function account(store, { token, action, ...input }) {
     const name = String(input.displayName || "").trim();
     if (!name || name.length > 100)
       throw new Error("显示名称须为 1–100 个字符");
-    await store.rows("UPDATE ad_users SET display_name=? WHERE id=?", [
-      name,
-      id,
-    ]);
+    await store.transaction(async tx=>{
+      await tx.rows('SELECT id FROM ad_users WHERE id=? FOR UPDATE',[id]);
+      const fields=validateProfile(input,await tx.document(`account-${id}`,'profile')||{});
+      await tx.putDocument('profile',{id:`account-${id}`,title:'个人资料',...fields});
+      await tx.rows('UPDATE ad_users SET display_name=? WHERE id=?',[name,id]);
+    });
     return (await authStatus(store, token)).user;
   }
   if (action === "password") {
